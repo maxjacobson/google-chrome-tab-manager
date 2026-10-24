@@ -78,5 +78,6 @@ let's go thru these milestones and pause for my feedback after each one:
 2. I can drill down on a window to see the list of tabs in the window and scroll thru the list
 3. I can type keywords and filter the tabs by keyword (should search the title and also the URL). Maybe I type `/` to go into the filtering mode and [enter] to exit the filtering mode
 4. I can press space to select tabs (or deselect) for deletion and `d` to delete them (with a confirmation dialog)
+5. I can press `o` to open Chrome and bring that tab to the front
 
 

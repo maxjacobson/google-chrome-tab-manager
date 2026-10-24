@@ -11,12 +11,21 @@ import (
 )
 
 type fakeSource struct {
-	windows []chrome.Window
-	err     error
+	windows       []chrome.Window
+	err           error
+	activateErr   error
+	activated     []int
+	activatedWins []int
 }
 
-func (f fakeSource) ListTabs(context.Context) ([]chrome.Window, error) {
+func (f *fakeSource) ListTabs(context.Context) ([]chrome.Window, error) {
 	return f.windows, f.err
+}
+
+func (f *fakeSource) ActivateTab(_ context.Context, windowIndex, tabIndex int) error {
+	f.activated = append(f.activated, tabIndex)
+	f.activatedWins = append(f.activatedWins, windowIndex)
+	return f.activateErr
 }
 
 func sampleWindows() []chrome.Window {
@@ -43,13 +52,24 @@ func newLoaded(windows []chrome.Window) Model {
 	if windows == nil {
 		windows = sampleWindows()
 	}
-	m := New(context.Background(), fakeSource{windows: windows})
-	return update(m, tabsMsg{windows: windows})
+	return newLoadedFrom(&fakeSource{windows: windows})
+}
+
+func newLoadedFrom(source *fakeSource) Model {
+	m := New(context.Background(), source)
+	return update(m, tabsMsg{windows: source.windows})
 }
 
 func update(m Model, msg tea.Msg) Model {
 	next, _ := m.Update(msg)
 	return next.(Model)
+}
+
+func runCmd(m Model, cmd tea.Cmd) Model {
+	if cmd == nil {
+		return m
+	}
+	return update(m, cmd())
 }
 
 func key(code rune, mod ...tea.KeyMod) tea.Msg {
@@ -65,7 +85,7 @@ func resize(m Model, w, h int) Model {
 }
 
 func TestInitLoadsTabsAndStartsSpinner(t *testing.T) {
-	cmd := New(context.Background(), fakeSource{}).Init()
+	cmd := New(context.Background(), &fakeSource{}).Init()
 	if cmd == nil {
 		t.Fatal("Init returned no command, want a batched load and spinner tick")
 	}
@@ -117,7 +137,7 @@ func TestWindowSelectionJumpsToTopAndBottom(t *testing.T) {
 }
 
 func TestKeysIgnoredWhileLoading(t *testing.T) {
-	m := New(context.Background(), fakeSource{})
+	m := New(context.Background(), &fakeSource{})
 	next := update(m, key('j'))
 	if next.winCursor != m.winCursor {
 		t.Errorf("j while loading moved the selection to %d, want no movement", next.winCursor)
@@ -240,8 +260,54 @@ func TestResizeKeepsCursorVisible(t *testing.T) {
 
 func TestLoadErrorKeptForDisplay(t *testing.T) {
 	err := errors.New("Chrome isn't running")
-	m := update(New(context.Background(), fakeSource{}), tabsMsg{err: err})
+	m := update(New(context.Background(), &fakeSource{}), tabsMsg{err: err})
 	if m.err != err {
 		t.Errorf("model error = %v, want %v", m.err, err)
 	}
 }
+
+func TestOpenActivatesSelectedTab(t *testing.T) {
+	source := &fakeSource{windows: sampleWindows()}
+	m := newLoadedFrom(source)
+	m = update(m, key(tea.KeyEnter))
+	m = update(m, key('j'))
+	next, cmd := m.Update(key('o'))
+	if cmd == nil {
+		t.Fatal("o should start activating the tab in Chrome")
+	}
+	runCmd(next.(Model), cmd)
+	if len(source.activated) != 1 || source.activated[0] != 2 {
+		t.Errorf("ActivateTab args = %v, want tab 2", source.activated)
+	}
+	if len(source.activatedWins) != 1 || source.activatedWins[0] != 1 {
+		t.Errorf("ActivateTab window = %v, want window 1", source.activatedWins)
+	}
+}
+
+func TestOpenShowsErrorNotice(t *testing.T) {
+	source := &fakeSource{
+		windows:     sampleWindows(),
+		activateErr: errors.New("osascript failed"),
+	}
+	m := newLoadedFrom(source)
+	m = update(m, key(tea.KeyEnter))
+	next, cmd := m.Update(key('o'))
+	m = runCmd(next.(Model), cmd)
+	if m.notice == "" {
+		t.Fatal("activation error should set a notice")
+	}
+	m = update(m, key('j'))
+	if m.notice != "" {
+		t.Errorf("notice should clear on the next keypress, got %q", m.notice)
+	}
+}
+
+func TestOpenIgnoredOutsideTabsView(t *testing.T) {
+	source := &fakeSource{windows: sampleWindows()}
+	m := newLoadedFrom(source)
+	m = update(m, key('o'))
+	if len(source.activated) != 0 {
+		t.Errorf("o in the windows view should not activate anything, got %v", source.activated)
+	}
+}
+

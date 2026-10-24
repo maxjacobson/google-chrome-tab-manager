@@ -17,6 +17,8 @@ import (
 const (
 	// loadTimeout bounds one attempt to read Chrome's tabs.
 	loadTimeout = 30 * time.Second
+	// activateTimeout bounds one attempt to focus a tab in Chrome.
+	activateTimeout = 10 * time.Second
 	// spinnerFPS is how often the loading spinner animates.
 	spinnerFPS = 100 * time.Millisecond
 	// mouseWheelLines is how many rows one wheel notch moves.
@@ -32,10 +34,11 @@ var (
 	badStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 )
 
-// Source lists Chrome's open windows. chrome.Chrome implements it; tests
-// substitute fakes.
+// Source lists Chrome's open windows and focuses tabs in Chrome.
+// chrome.Chrome implements it; tests substitute fakes.
 type Source interface {
 	ListTabs(ctx context.Context) ([]chrome.Window, error)
+	ActivateTab(ctx context.Context, windowIndex, tabIndex int) error
 }
 
 type mode int
@@ -61,6 +64,7 @@ type Model struct {
 	winCursor int
 	tabCursor int
 	offset    int
+	notice    string
 
 	width, height int
 }
@@ -79,6 +83,11 @@ type tabsMsg struct {
 // spinnerTickMsg advances the loading spinner.
 type spinnerTickMsg struct{}
 
+// activatedMsg reports the outcome of focusing a tab in Chrome.
+type activatedMsg struct {
+	err error
+}
+
 func (m Model) load() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, loadTimeout)
@@ -90,6 +99,16 @@ func (m Model) load() tea.Cmd {
 
 func (m Model) spinnerTick() tea.Cmd {
 	return tea.Tick(spinnerFPS, func(time.Time) tea.Msg { return spinnerTickMsg{} })
+}
+
+func (m Model) activateTab() tea.Cmd {
+	return func() tea.Msg {
+		window := m.windows[m.winCursor]
+		tab := window.Tabs[m.tabCursor]
+		ctx, cancel := context.WithTimeout(m.ctx, activateTimeout)
+		defer cancel()
+		return activatedMsg{err: m.source.ActivateTab(ctx, window.Index, tab.Index)}
+	}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -128,6 +147,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.moveTabCursor(mouseWheelLines)
 		}
 		return m, nil
+	case activatedMsg:
+		if msg.err != nil {
+			m.notice = msg.err.Error()
+		}
+		return m, nil
 	case tea.KeyPressMsg:
 		return m.keyPress(msg.String())
 	}
@@ -135,6 +159,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) keyPress(key string) (tea.Model, tea.Cmd) {
+	m.notice = ""
 	switch key {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -194,6 +219,8 @@ func (m Model) keyPressTabs(key string) (tea.Model, tea.Cmd) {
 		m = m.moveTabCursor(max(1, m.tabViewHeight()/2))
 	case "ctrl+u":
 		m = m.moveTabCursor(-max(1, m.tabViewHeight()/2))
+	case "o":
+		return m, m.activateTab()
 	}
 	return m, nil
 }
@@ -329,9 +356,12 @@ func (m Model) viewTabs() string {
 	}
 	b.WriteString("\n")
 	footer := dimStyle.Render(fmt.Sprintf(
-		"%d/%d · j/k wheel ctrl+d/u scroll · g/G ends · esc back · q quit",
+		"%d/%d · j/k wheel ctrl+d/u scroll · g/G ends · o open · esc back · q quit",
 		m.tabCursor+1, len(tabs),
 	))
+	if m.notice != "" {
+		footer = badStyle.Render(truncate(m.notice, m.width))
+	}
 	b.WriteString(truncate(footer, m.width))
 	return b.String()
 }

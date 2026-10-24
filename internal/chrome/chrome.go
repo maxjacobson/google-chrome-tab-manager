@@ -77,6 +77,31 @@ func (Chrome) ListTabs(ctx context.Context) ([]Window, error) {
 	return ParseTabs(stdout.String())
 }
 
+// ActivateTab brings Chrome to the front with the given window and tab in
+// focus. Indices are 1-based, as in the tab listing.
+func (Chrome) ActivateTab(ctx context.Context, windowIndex, tabIndex int) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("activating a Chrome tab only works on macOS")
+	}
+	script := fmt.Sprintf(`
+tell application "Google Chrome"
+    activate
+    set active tab index of window %d to %d
+    set index of window %d to 1
+end tell
+`, windowIndex, tabIndex, windowIndex)
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("running osascript: %w: %s", err, msg)
+		}
+		return fmt.Errorf("running osascript: %w", err)
+	}
+	return nil
+}
+
 // ParseTabs parses the TSV output of listTabsScript into ordered windows.
 // Each line is "window<TAB>tab<TAB>url<TAB>title"; a title may itself
 // contain tab characters, which are rejoined rather than treated as fields.
