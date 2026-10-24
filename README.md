@@ -40,6 +40,7 @@ Requires [Go](https://go.dev) and [just](https://github.com/casey/just).
 | `j` / `k`   | move selection (or scroll tabs) |
 | `g` / `G`   | jump to top / bottom            |
 | mouse wheel | scroll the tab list             |
+| click       | open a window; focus a tab      |
 | `o`         | show the selected tab in Chrome |
 | `q`         | quit                            |
 

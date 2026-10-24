@@ -152,6 +152,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = msg.err.Error()
 		}
 		return m, nil
+	case tea.MouseClickMsg:
+		if m.loading || m.err != nil || msg.Button != tea.MouseLeft {
+			return m, nil
+		}
+		return m.clickRow(msg.Y), nil
 	case tea.KeyPressMsg:
 		return m.keyPress(msg.String())
 	}
@@ -232,6 +237,31 @@ func (m Model) currentTabs() []chrome.Tab {
 	return m.windows[m.winCursor].Tabs
 }
 
+// clickRow handles a left click at terminal row y. Both views start their
+// rows two lines down: the header and a blank line. Clicking a window drills
+// into it; clicking a tab moves the cursor to it.
+func (m Model) clickRow(y int) Model {
+	const rowTop = 2
+	if y < rowTop {
+		return m
+	}
+	row := y - rowTop
+	if m.mode == modeWindows {
+		if row < len(m.windows) {
+			m.winCursor = row
+			m.mode = modeTabs
+			m.tabCursor = 0
+			m.offset = 0
+		}
+		return m
+	}
+	tabs := m.currentTabs()
+	if target := m.offset + row; target < len(tabs) {
+		m.tabCursor = target
+	}
+	return m
+}
+
 // moveTabCursor returns the model with the tab cursor moved by delta rows,
 // kept inside the list, with the view scrolled so the cursor stays visible.
 func (m Model) moveTabCursor(delta int) Model {
@@ -290,6 +320,7 @@ func (m Model) View() tea.View {
 	}
 	v := tea.NewView(content)
 	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
 	return v
 }
 

@@ -311,3 +311,51 @@ func TestOpenIgnoredOutsideTabsView(t *testing.T) {
 	}
 }
 
+func click(y int) tea.Msg {
+	return tea.MouseClickMsg{Y: y, Button: tea.MouseLeft}
+}
+
+func TestClickWindowDrillsIntoItsTabs(t *testing.T) {
+	m := newLoaded(nil)
+	m = update(m, click(2))
+	if m.mode != modeTabs || m.winCursor != 0 {
+		t.Fatalf("click on window row 0: mode = %v, winCursor = %d, want tabs view of window 0", m.mode, m.winCursor)
+	}
+	m = update(m, key(tea.KeyEscape))
+	m = update(m, click(3))
+	if m.mode != modeTabs || m.winCursor != 1 {
+		t.Errorf("click on window row 1: mode = %v, winCursor = %d, want tabs view of window 1", m.mode, m.winCursor)
+	}
+}
+
+func TestClickOutsideWindowRowsIgnored(t *testing.T) {
+	m := newLoaded(nil)
+	m = update(m, click(1))
+	if m.mode != modeWindows {
+		t.Errorf("click on the blank line opened a window, mode = %v", m.mode)
+	}
+	m = update(m, click(9))
+	if m.mode != modeWindows {
+		t.Errorf("click below the last window opened a window, mode = %v", m.mode)
+	}
+}
+
+func TestClickTabMovesCursor(t *testing.T) {
+	m := resize(update(newLoaded(manyTabs(20)), key(tea.KeyEnter)), 80, 8)
+	m = update(m, key('G'))
+	if m.offset != 16 {
+		t.Fatalf("after G, offset = %d, want 16", m.offset)
+	}
+	m = update(m, click(2))
+	if m.tabCursor != 16 {
+		t.Errorf("click on the first visible row: tabCursor = %d, want 16", m.tabCursor)
+	}
+	m = update(m, click(5))
+	if m.tabCursor != 19 {
+		t.Errorf("click on the last visible row: tabCursor = %d, want 19", m.tabCursor)
+	}
+	m = update(m, click(7))
+	if m.tabCursor != 19 {
+		t.Errorf("click below the last row should not move the cursor, tabCursor = %d", m.tabCursor)
+	}
+}

@@ -81,3 +81,4 @@ let's go thru these milestones and pause for my feedback after each one:
 5. I can press `o` to open Chrome and bring that tab to the front
 
 
+6. I can mouse click on one of the windows to drill down into the tabs, and click on a tab to pull the focus/highlight down to that tab (if feasible)
