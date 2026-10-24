@@ -28,20 +28,28 @@ type Window struct {
 type Chrome struct{}
 
 // listTabsScript produces one TSV line per tab: window, tab, URL, title.
+// It reads each window's URLs and titles in bulk; asking tab-by-tab costs
+// two Apple Events per tab, which takes ~45s for a thousand-tab window.
 const listTabsScript = `
 tell application "Google Chrome"
-    set output to ""
+    set output to {}
     repeat with w from 1 to count of windows
         try
-            repeat with t from 1 to count of tabs of window w
-                set tabUrl to URL of tab t of window w
-                set tabTitle to title of tab t of window w
+            set tabUrls to URL of tabs of window w
+            set tabTitles to title of tabs of window w
+            repeat with t from 1 to count of tabUrls
+                set tabUrl to item t of tabUrls
+                set tabTitle to item t of tabTitles
                 if tabUrl is missing value then set tabUrl to ""
                 if tabTitle is missing value then set tabTitle to ""
-                set output to output & w & "\t" & t & "\t" & tabUrl & "\t" & tabTitle & linefeed
+                set end of output to (w as text) & "\t" & (t as text) & "\t" & tabUrl & "\t" & tabTitle
             end repeat
         end try
     end repeat
+    set astid to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to linefeed
+    set output to output as text
+    set AppleScript's text item delimiters to astid
     return output
 end tell
 `
