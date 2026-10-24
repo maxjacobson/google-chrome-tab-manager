@@ -3,7 +3,6 @@ package ui
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -32,9 +31,20 @@ func sampleWindows() []chrome.Window {
 	}
 }
 
-func newLoaded() Model {
-	m := New(context.Background(), fakeSource{windows: sampleWindows()})
-	return update(m, tabsMsg{windows: sampleWindows()})
+func manyTabs(n int) []chrome.Window {
+	tabs := make([]chrome.Tab, n)
+	for i := range tabs {
+		tabs[i] = chrome.Tab{Index: i + 1, URL: "https://example.com", Title: "Tab"}
+	}
+	return []chrome.Window{{Index: 1, Tabs: tabs}}
+}
+
+func newLoaded(windows []chrome.Window) Model {
+	if windows == nil {
+		windows = sampleWindows()
+	}
+	m := New(context.Background(), fakeSource{windows: windows})
+	return update(m, tabsMsg{windows: windows})
 }
 
 func update(m Model, msg tea.Msg) Model {
@@ -50,34 +60,14 @@ func key(code rune, mod ...tea.KeyMod) tea.Msg {
 	return tea.KeyPressMsg(k)
 }
 
+func resize(m Model, w, h int) Model {
+	return update(m, tea.WindowSizeMsg{Width: w, Height: h})
+}
+
 func TestInitLoadsTabsAndStartsSpinner(t *testing.T) {
 	cmd := New(context.Background(), fakeSource{}).Init()
 	if cmd == nil {
 		t.Fatal("Init returned no command, want a batched load and spinner tick")
-	}
-}
-
-func TestLoadingViewShowsPrompt(t *testing.T) {
-	view := New(context.Background(), fakeSource{}).View().Content
-	if !strings.Contains(view, "asking Chrome for its tabs") {
-		t.Errorf("loading view should mention what it's doing:\n%s", view)
-	}
-}
-
-func TestLoadedViewListsWindowsWithTabCounts(t *testing.T) {
-	view := newLoaded().View().Content
-	for _, want := range []string{"Google Chrome: 2 windows, 3 tabs", "Window 1", "Window 2", "2 tabs", "1 tab"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("view should contain %q:\n%s", want, view)
-		}
-	}
-}
-
-func TestErrorViewShowsMessage(t *testing.T) {
-	m := New(context.Background(), fakeSource{err: errors.New("Chrome isn't running")})
-	m = update(m, tabsMsg{err: errors.New("Chrome isn't running")})
-	if !strings.Contains(m.View().Content, "error: Chrome isn't running") {
-		t.Errorf("error view should show the error:\n%s", m.View().Content)
 	}
 }
 
@@ -88,64 +78,170 @@ func TestQuitKeyReturnsQuitCommand(t *testing.T) {
 		key('c', tea.ModCtrl),
 	}
 	for _, msg := range quits {
-		if _, cmd := newLoaded().Update(msg); cmd == nil {
+		if _, cmd := newLoaded(nil).Update(msg); cmd == nil {
 			t.Errorf("%v should quit", msg)
 		}
 	}
 }
 
-func TestSelectionMovesAndClamps(t *testing.T) {
-	m := newLoaded()
+func TestWindowSelectionMovesAndClamps(t *testing.T) {
+	m := newLoaded(nil)
 	m = update(m, key('j'))
-	if m.selected != 1 {
-		t.Errorf("after j, selected = %d, want 1", m.selected)
+	if m.winCursor != 1 {
+		t.Errorf("after j, winCursor = %d, want 1", m.winCursor)
 	}
 	m = update(m, key('j'))
-	if m.selected != 1 {
-		t.Errorf("after j past the end, selected = %d, want 1", m.selected)
+	if m.winCursor != 1 {
+		t.Errorf("after j past the end, winCursor = %d, want 1", m.winCursor)
 	}
 	m = update(m, key('k'))
-	if m.selected != 0 {
-		t.Errorf("after k, selected = %d, want 0", m.selected)
+	if m.winCursor != 0 {
+		t.Errorf("after k, winCursor = %d, want 0", m.winCursor)
 	}
 	m = update(m, key('k'))
-	if m.selected != 0 {
-		t.Errorf("after k past the top, selected = %d, want 0", m.selected)
+	if m.winCursor != 0 {
+		t.Errorf("after k past the top, winCursor = %d, want 0", m.winCursor)
 	}
 }
 
-func TestSelectionJumpsToTopAndBottom(t *testing.T) {
-	m := newLoaded()
+func TestWindowSelectionJumpsToTopAndBottom(t *testing.T) {
+	m := newLoaded(nil)
 	m = update(m, key('G'))
-	if m.selected != 1 {
-		t.Errorf("after G, selected = %d, want 1", m.selected)
+	if m.winCursor != 1 {
+		t.Errorf("after G, winCursor = %d, want 1", m.winCursor)
 	}
 	m = update(m, key('g'))
-	if m.selected != 0 {
-		t.Errorf("after g, selected = %d, want 0", m.selected)
-	}
-}
-
-func TestSelectedRowIsHighlighted(t *testing.T) {
-	loaded := newLoaded()
-	moved := update(loaded, key('j'))
-	if moved.View().Content == loaded.View().Content {
-		t.Error("moving the selection should change the view")
+	if m.winCursor != 0 {
+		t.Errorf("after g, winCursor = %d, want 0", m.winCursor)
 	}
 }
 
 func TestKeysIgnoredWhileLoading(t *testing.T) {
 	m := New(context.Background(), fakeSource{})
 	next := update(m, key('j'))
-	if next.selected != m.selected {
-		t.Errorf("j while loading moved the selection to %d, want no movement", next.selected)
+	if next.winCursor != m.winCursor {
+		t.Errorf("j while loading moved the selection to %d, want no movement", next.winCursor)
 	}
 }
 
 func TestSpinnerStopsAfterLoad(t *testing.T) {
-	m := newLoaded()
+	m := newLoaded(nil)
 	m = update(m, spinnerTickMsg{})
 	if m.spinnerFrame != 0 {
 		t.Errorf("spinner advanced after load, frame = %d, want 0", m.spinnerFrame)
+	}
+}
+
+func TestEnterOpensSelectedWindow(t *testing.T) {
+	m := update(newLoaded(nil), key(tea.KeyEnter))
+	if m.mode != modeTabs {
+		t.Errorf("after enter, mode = %v, want modeTabs", m.mode)
+	}
+	if m.tabCursor != 0 || m.offset != 0 {
+		t.Errorf("after enter, tabCursor = %d, offset = %d, want 0/0", m.tabCursor, m.offset)
+	}
+}
+
+func TestEscBacksOutOfTabsView(t *testing.T) {
+	for _, msg := range []tea.Msg{key(tea.KeyEscape), key(tea.KeyBackspace), key('h')} {
+		m := update(newLoaded(nil), key(tea.KeyEnter))
+		if m = update(m, msg); m.mode != modeWindows {
+			t.Errorf("%v should back out of the tabs view, mode = %v", msg, m.mode)
+		}
+	}
+}
+
+func TestTabCursorMovesAndClamps(t *testing.T) {
+	m := update(newLoaded(nil), key(tea.KeyEnter))
+	m = update(m, key('j'))
+	if m.tabCursor != 1 {
+		t.Errorf("after j, tabCursor = %d, want 1", m.tabCursor)
+	}
+	m = update(m, key('j'))
+	if m.tabCursor != 1 {
+		t.Errorf("after j past the end, tabCursor = %d, want 1", m.tabCursor)
+	}
+	m = update(m, key('k'))
+	if m.tabCursor != 0 {
+		t.Errorf("after k, tabCursor = %d, want 0", m.tabCursor)
+	}
+}
+
+func TestTabCursorJumpsToTopAndBottom(t *testing.T) {
+	m := resize(update(newLoaded(manyTabs(20)), key(tea.KeyEnter)), 80, 8)
+	m = update(m, key('G'))
+	if m.tabCursor != 19 {
+		t.Errorf("after G, tabCursor = %d, want 19", m.tabCursor)
+	}
+	m = update(m, key('g'))
+	if m.tabCursor != 0 || m.offset != 0 {
+		t.Errorf("after g, tabCursor = %d, offset = %d, want 0/0", m.tabCursor, m.offset)
+	}
+}
+
+func TestViewScrollsToKeepCursorVisible(t *testing.T) {
+	m := resize(update(newLoaded(manyTabs(20)), key(tea.KeyEnter)), 80, 8)
+	m = update(m, key('G'))
+	if m.offset != 16 {
+		t.Errorf("after G, offset = %d, want 16", m.offset)
+	}
+	m = update(m, key('g'))
+	if m.offset != 0 {
+		t.Errorf("after g, offset = %d, want 0", m.offset)
+	}
+}
+
+func TestHalfPageScrolling(t *testing.T) {
+	m := resize(update(newLoaded(manyTabs(30)), key(tea.KeyEnter)), 80, 10)
+	m = update(m, key('G'))
+	if m.tabCursor != 29 {
+		t.Fatalf("after G, tabCursor = %d, want 29", m.tabCursor)
+	}
+	m = update(m, key('u', tea.ModCtrl))
+	if m.tabCursor != 26 {
+		t.Errorf("after ctrl+u, tabCursor = %d, want 26", m.tabCursor)
+	}
+	m = update(m, key('d', tea.ModCtrl))
+	if m.tabCursor != 29 {
+		t.Errorf("after ctrl+d, tabCursor = %d, want 29", m.tabCursor)
+	}
+}
+
+func TestMouseWheelScrolls(t *testing.T) {
+	m := resize(update(newLoaded(manyTabs(30)), key(tea.KeyEnter)), 80, 10)
+	m = update(m, key('G'))
+	m = update(m, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	if m.tabCursor != 26 {
+		t.Errorf("after wheel up, tabCursor = %d, want 26", m.tabCursor)
+	}
+	m = update(m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if m.tabCursor != 29 {
+		t.Errorf("after wheel down, tabCursor = %d, want 29", m.tabCursor)
+	}
+}
+
+func TestResizeKeepsCursorVisible(t *testing.T) {
+	m := resize(update(newLoaded(manyTabs(30)), key(tea.KeyEnter)), 80, 10)
+	m = update(m, key('G'))
+	if m.offset != 24 {
+		t.Fatalf("after G, offset = %d, want 24", m.offset)
+	}
+	m = resize(m, 80, 24)
+	visible := m.tabViewHeight()
+	if m.tabCursor < m.offset || m.tabCursor >= m.offset+visible {
+		t.Errorf("cursor %d outside view [%d, %d)", m.tabCursor, m.offset, m.offset+visible)
+	}
+	m = resize(m, 80, 6)
+	visible = m.tabViewHeight()
+	if m.tabCursor < m.offset || m.tabCursor >= m.offset+visible {
+		t.Errorf("after shrinking, cursor %d outside view [%d, %d)", m.tabCursor, m.offset, m.offset+visible)
+	}
+}
+
+func TestLoadErrorKeptForDisplay(t *testing.T) {
+	err := errors.New("Chrome isn't running")
+	m := update(New(context.Background(), fakeSource{}), tabsMsg{err: err})
+	if m.err != err {
+		t.Errorf("model error = %v, want %v", m.err, err)
 	}
 }

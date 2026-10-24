@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/maxjacobson/google-chrome-tab-manager/internal/chrome"
 )
@@ -18,6 +19,8 @@ const (
 	loadTimeout = 30 * time.Second
 	// spinnerFPS is how often the loading spinner animates.
 	spinnerFPS = 100 * time.Millisecond
+	// mouseWheelLines is how many rows one wheel notch moves.
+	mouseWheelLines = 3
 )
 
 var spinnerFrames = []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
@@ -35,8 +38,15 @@ type Source interface {
 	ListTabs(ctx context.Context) ([]chrome.Window, error)
 }
 
+type mode int
+
+const (
+	modeWindows mode = iota
+	modeTabs
+)
+
 // Model is the bubbletea model for the tab manager. It loads tabs once on
-// startup, shows a spinner while it waits, and then lists the windows.
+// startup, lists the windows, and lets the user drill into one window's tabs.
 type Model struct {
 	source Source
 	ctx    context.Context
@@ -44,9 +54,13 @@ type Model struct {
 	loading      bool
 	spinnerFrame int
 
-	windows  []chrome.Window
-	err      error
-	selected int
+	windows []chrome.Window
+	err     error
+
+	mode      mode
+	winCursor int
+	tabCursor int
+	offset    int
 
 	width, height int
 }
@@ -86,6 +100,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m = m.clampOffset()
 		return m, nil
 	case spinnerTickMsg:
 		if !m.loading {
@@ -100,29 +115,138 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.windows = msg.windows
-		m.selected = 0
+		m.winCursor = 0
 		return m, nil
-	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "q", "ctrl+c", "esc":
-			return m, tea.Quit
-		}
-		if m.loading || m.err != nil {
+	case tea.MouseWheelMsg:
+		if m.loading || m.err != nil || m.mode != modeTabs {
 			return m, nil
 		}
-		switch msg.String() {
-		case "j", "down":
-			m.selected = min(m.selected+1, len(m.windows)-1)
-		case "k", "up":
-			m.selected = max(m.selected-1, 0)
-		case "g":
-			m.selected = 0
-		case "G":
-			m.selected = len(m.windows) - 1
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			m = m.moveTabCursor(-mouseWheelLines)
+		case tea.MouseWheelDown:
+			m = m.moveTabCursor(mouseWheelLines)
+		}
+		return m, nil
+	case tea.KeyPressMsg:
+		return m.keyPress(msg.String())
+	}
+	return m, nil
+}
+
+func (m Model) keyPress(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "esc", "h", "backspace":
+		if m.mode == modeTabs {
+			m.mode = modeWindows
+			return m, nil
+		}
+		if key == "esc" {
+			return m, tea.Quit
 		}
 		return m, nil
 	}
+	if m.loading || m.err != nil {
+		return m, nil
+	}
+	if m.mode == modeWindows {
+		return m.keyPressWindows(key)
+	}
+	return m.keyPressTabs(key)
+}
+
+func (m Model) keyPressWindows(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "j", "down":
+		m.winCursor = min(m.winCursor+1, len(m.windows)-1)
+	case "k", "up":
+		m.winCursor = max(m.winCursor-1, 0)
+	case "g":
+		m.winCursor = 0
+	case "G":
+		m.winCursor = len(m.windows) - 1
+	case "enter", "l", "right":
+		if len(m.windows) > 0 {
+			m.mode = modeTabs
+			m.tabCursor = 0
+			m.offset = 0
+		}
+	}
 	return m, nil
+}
+
+func (m Model) keyPressTabs(key string) (tea.Model, tea.Cmd) {
+	tabs := m.currentTabs()
+	switch key {
+	case "j", "down":
+		m = m.moveTabCursor(1)
+	case "k", "up":
+		m = m.moveTabCursor(-1)
+	case "g":
+		m.tabCursor = 0
+		m.offset = 0
+	case "G":
+		m.tabCursor = len(tabs) - 1
+		m.offset = max(0, len(tabs)-m.tabViewHeight())
+	case "ctrl+d":
+		m = m.moveTabCursor(max(1, m.tabViewHeight()/2))
+	case "ctrl+u":
+		m = m.moveTabCursor(-max(1, m.tabViewHeight()/2))
+	}
+	return m, nil
+}
+
+func (m Model) currentTabs() []chrome.Tab {
+	if m.winCursor >= len(m.windows) {
+		return nil
+	}
+	return m.windows[m.winCursor].Tabs
+}
+
+// moveTabCursor returns the model with the tab cursor moved by delta rows,
+// kept inside the list, with the view scrolled so the cursor stays visible.
+func (m Model) moveTabCursor(delta int) Model {
+	tabs := m.currentTabs()
+	if len(tabs) == 0 {
+		return m
+	}
+	m.tabCursor = min(max(m.tabCursor+delta, 0), len(tabs)-1)
+	visible := m.tabViewHeight()
+	if m.tabCursor < m.offset {
+		m.offset = m.tabCursor
+	}
+	if m.tabCursor >= m.offset+visible {
+		m.offset = m.tabCursor - visible + 1
+	}
+	return m
+}
+
+// tabViewHeight is how many tab rows fit under the header and footer.
+func (m Model) tabViewHeight() int {
+	return max(1, m.height-4)
+}
+
+func (m Model) clampOffset() Model {
+	if m.mode != modeTabs {
+		return m
+	}
+	tabs := m.currentTabs()
+	if len(tabs) == 0 {
+		m.offset = 0
+		return m
+	}
+	m.offset = min(max(m.offset, 0), max(0, len(tabs)-m.tabViewHeight()))
+	m.tabCursor = min(max(m.tabCursor, 0), len(tabs)-1)
+	visible := m.tabViewHeight()
+	if m.tabCursor < m.offset {
+		m.offset = m.tabCursor
+	}
+	if m.tabCursor >= m.offset+visible {
+		m.offset = m.tabCursor - visible + 1
+	}
+	return m
 }
 
 func (m Model) View() tea.View {
@@ -132,8 +256,10 @@ func (m Model) View() tea.View {
 		content = m.viewError()
 	case m.loading:
 		content = m.viewLoading()
+	case m.mode == modeTabs:
+		content = m.viewTabs()
 	default:
-		content = m.viewList()
+		content = m.viewWindows()
 	}
 	v := tea.NewView(content)
 	v.AltScreen = true
@@ -149,7 +275,7 @@ func (m Model) viewError() string {
 		dimStyle.Render("press q to quit")
 }
 
-func (m Model) viewList() string {
+func (m Model) viewWindows() string {
 	totalTabs := 0
 	for _, w := range m.windows {
 		totalTabs += len(w.Tabs)
@@ -164,7 +290,7 @@ func (m Model) viewList() string {
 	b.WriteString("\n\n")
 	for i, w := range m.windows {
 		line := fmt.Sprintf("Window %d  %s", w.Index, dimStyle.Render(fmt.Sprintf("%d %s", len(w.Tabs), plural("tab", len(w.Tabs)))))
-		if i == m.selected {
+		if i == m.winCursor {
 			b.WriteString(selectedStyle.Render("▸ " + line))
 		} else {
 			b.WriteString("  " + line)
@@ -172,8 +298,49 @@ func (m Model) viewList() string {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("j/k select · q quit"))
+	b.WriteString(dimStyle.Render("enter open · j/k select · g/G ends · q quit"))
 	return b.String()
+}
+
+func (m Model) viewTabs() string {
+	tabs := m.currentTabs()
+	window := m.windows[m.winCursor]
+
+	var b strings.Builder
+	header := titleStyle.Render(fmt.Sprintf("Window %d · %d %s", window.Index, len(tabs), plural("tab", len(tabs))))
+	b.WriteString(truncate(header, m.width))
+	b.WriteString("\n\n")
+	visible := m.tabViewHeight()
+	for i := m.offset; i < min(m.offset+visible, len(tabs)); i++ {
+		tab := tabs[i]
+		cursor := "  "
+		if i == m.tabCursor {
+			cursor = "▸ "
+		}
+		row := fmt.Sprintf("%s%-4d %s", cursor, tab.Index, tab.Title)
+		if tab.URL != "" {
+			row += "  " + dimStyle.Render(tab.URL)
+		}
+		if i == m.tabCursor {
+			row = selectedStyle.Render(row)
+		}
+		b.WriteString(truncate(row, m.width))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	footer := dimStyle.Render(fmt.Sprintf(
+		"%d/%d · j/k wheel ctrl+d/u scroll · g/G ends · esc back · q quit",
+		m.tabCursor+1, len(tabs),
+	))
+	b.WriteString(truncate(footer, m.width))
+	return b.String()
+}
+
+func truncate(row string, width int) string {
+	if width <= 0 {
+		return row
+	}
+	return ansi.Truncate(row, width, "…")
 }
 
 func plural(word string, n int) string {

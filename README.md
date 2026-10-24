@@ -10,11 +10,11 @@ direction. See `AGENTS.md` for the working notes and milestones.
 
 ## Status
 
-Milestone 1 of 4 is done:
+Milestone 2 of 4 is done:
 
 1. ✅ Launch the TUI, see a spinner while it reads Chrome, then a list of
    windows with their tab counts
-2. ⬜ Drill into a window to see and scroll its tabs
+2. ✅ Drill into a window to see and scroll its tabs
 3. ⬜ Filter tabs by keyword (`/` to search titles and URLs, enter to exit)
 4. ⬜ Mark tabs with space and close them with `d` (with a confirmation)
 
@@ -33,11 +33,14 @@ Requires [Go](https://go.dev) and [just](https://github.com/casey/just).
 
 ### Keys
 
-| Key         | Action            |
-| ----------- | ----------------- |
-| `j` / `k`   | move selection    |
-| `g` / `G`   | top / bottom      |
-| `q`         | quit              |
+| Key         | Action                          |
+| ----------- | ------------------------------- |
+| `enter`     | open the selected window's tabs |
+| `esc` / `h` | back to the window list         |
+| `j` / `k`   | move selection (or scroll tabs) |
+| `g` / `G`   | jump to top / bottom            |
+| mouse wheel | scroll the tab list             |
+| `q`         | quit                            |
 
 ## Why macOS only?
 
