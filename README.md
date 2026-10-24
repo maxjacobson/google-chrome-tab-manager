@@ -10,13 +10,15 @@ direction. See `AGENTS.md` for the working notes and milestones.
 
 ## Status
 
-Milestone 2 of 4 is done:
+Milestone 3 of 4 is done:
 
 1. ✅ Launch the TUI, see a spinner while it reads Chrome, then a list of
    windows with their tab counts
 2. ✅ Drill into a window to see and scroll its tabs
-3. ⬜ Filter tabs by keyword (`/` to search titles and URLs, enter to exit)
+3. ✅ Filter tabs by keyword (`/` to search titles and URLs, enter to exit)
 4. ⬜ Mark tabs with space and close them with `d` (with a confirmation)
+5. ✅ Open a tab in Chrome with `o`
+6. ✅ Click a window to drill in, click a tab to focus it
 
 ## Usage
 
@@ -41,6 +43,7 @@ Requires [Go](https://go.dev) and [just](https://github.com/casey/just).
 | `g` / `G`   | jump to top / bottom            |
 | mouse wheel | scroll the tab list             |
 | click       | open a window; focus a tab      |
+| `/`         | filter tabs by title and URL    |
 | `o`         | show the selected tab in Chrome |
 | `q`         | quit                            |
 

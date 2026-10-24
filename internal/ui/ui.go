@@ -66,6 +66,11 @@ type Model struct {
 	offset    int
 	notice    string
 
+	// filtering is true while the user is typing a query; the query stays
+	// applied (and the list filtered) after enter leaves input mode.
+	filtering bool
+	query     string
+
 	width, height int
 }
 
@@ -104,7 +109,7 @@ func (m Model) spinnerTick() tea.Cmd {
 func (m Model) activateTab() tea.Cmd {
 	return func() tea.Msg {
 		window := m.windows[m.winCursor]
-		tab := window.Tabs[m.tabCursor]
+		tab := m.visibleTabs()[m.tabCursor]
 		ctx, cancel := context.WithTimeout(m.ctx, activateTimeout)
 		defer cancel()
 		return activatedMsg{err: m.source.ActivateTab(ctx, window.Index, tab.Index)}
@@ -158,6 +163,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.clickRow(msg.Y), nil
 	case tea.KeyPressMsg:
+		if m.filtering {
+			return m.filterInput(msg)
+		}
 		return m.keyPress(msg.String())
 	}
 	return m, nil
@@ -170,7 +178,12 @@ func (m Model) keyPress(key string) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc", "h", "backspace":
 		if m.mode == modeTabs {
+			if key == "esc" && m.query != "" {
+				m = m.setQuery("")
+				return m, nil
+			}
 			m.mode = modeWindows
+			m = m.setQuery("")
 			return m, nil
 		}
 		if key == "esc" {
@@ -208,7 +221,7 @@ func (m Model) keyPressWindows(key string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) keyPressTabs(key string) (tea.Model, tea.Cmd) {
-	tabs := m.currentTabs()
+	tabs := m.visibleTabs()
 	switch key {
 	case "j", "down":
 		m = m.moveTabCursor(1)
@@ -218,14 +231,20 @@ func (m Model) keyPressTabs(key string) (tea.Model, tea.Cmd) {
 		m.tabCursor = 0
 		m.offset = 0
 	case "G":
-		m.tabCursor = len(tabs) - 1
-		m.offset = max(0, len(tabs)-m.tabViewHeight())
+		if len(tabs) > 0 {
+			m.tabCursor = len(tabs) - 1
+			m.offset = max(0, len(tabs)-m.tabViewHeight())
+		}
 	case "ctrl+d":
 		m = m.scrollTabs(max(1, m.tabViewHeight()/2))
 	case "ctrl+u":
 		m = m.scrollTabs(-max(1, m.tabViewHeight()/2))
 	case "o":
-		return m, m.activateTab()
+		if m.tabCursor < len(tabs) {
+			return m, m.activateTab()
+		}
+	case "/":
+		m.filtering = true
 	}
 	return m, nil
 }
@@ -235,6 +254,68 @@ func (m Model) currentTabs() []chrome.Tab {
 		return nil
 	}
 	return m.windows[m.winCursor].Tabs
+}
+
+// visibleTabs is the window's tabs with the current query applied: every
+// whitespace-separated term must appear in the title or the URL.
+func (m Model) visibleTabs() []chrome.Tab {
+	tabs := m.currentTabs()
+	if m.query == "" {
+		return tabs
+	}
+	terms := strings.Fields(strings.ToLower(m.query))
+	var out []chrome.Tab
+	for _, tab := range tabs {
+		if matchesTab(tab, terms) {
+			out = append(out, tab)
+		}
+	}
+	return out
+}
+
+func matchesTab(tab chrome.Tab, terms []string) bool {
+	title := strings.ToLower(tab.Title)
+	url := strings.ToLower(tab.URL)
+	for _, term := range terms {
+		if !strings.Contains(title, term) && !strings.Contains(url, term) {
+			return false
+		}
+	}
+	return true
+}
+
+// setQuery applies a new filter query, moving the cursor back to the top of
+// the filtered list.
+func (m Model) setQuery(q string) Model {
+	m.query = q
+	m.tabCursor = 0
+	m.offset = 0
+	return m
+}
+
+// filterInput handles a keypress while the user is typing a query: runing
+// keys build the query, enter accepts it, and esc clears it.
+func (m Model) filterInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "enter":
+		m.filtering = false
+	case "esc":
+		m.filtering = false
+		m = m.setQuery("")
+	case "backspace":
+		if runes := []rune(m.query); len(runes) > 0 {
+			m = m.setQuery(string(runes[:len(runes)-1]))
+		}
+	case "space":
+		m = m.setQuery(m.query + " ")
+	default:
+		if msg.Text != "" {
+			m = m.setQuery(m.query + msg.Text)
+		}
+	}
+	return m, nil
 }
 
 // clickRow handles a left click at terminal row y. Both views start their
@@ -255,7 +336,7 @@ func (m Model) clickRow(y int) Model {
 		}
 		return m
 	}
-	tabs := m.currentTabs()
+	tabs := m.visibleTabs()
 	if target := m.offset + row; target < len(tabs) {
 		m.tabCursor = target
 	}
@@ -266,7 +347,7 @@ func (m Model) clickRow(y int) Model {
 // kept inside the list, with the view scrolled to bring the cursor back
 // into view if it left it.
 func (m Model) moveTabCursor(delta int) Model {
-	tabs := m.currentTabs()
+	tabs := m.visibleTabs()
 	if len(tabs) == 0 {
 		return m
 	}
@@ -278,7 +359,7 @@ func (m Model) moveTabCursor(delta int) Model {
 // scrollTabs moves the list by delta rows without moving the cursor: the
 // selected tab stays selected while the content slides under it.
 func (m Model) scrollTabs(delta int) Model {
-	tabs := m.currentTabs()
+	tabs := m.visibleTabs()
 	if len(tabs) == 0 {
 		return m
 	}
@@ -308,7 +389,7 @@ func (m Model) clampOffset() Model {
 	if m.mode != modeTabs {
 		return m
 	}
-	tabs := m.currentTabs()
+	tabs := m.visibleTabs()
 	if len(tabs) == 0 {
 		m.offset = 0
 		return m
@@ -373,12 +454,15 @@ func (m Model) viewWindows() string {
 }
 
 func (m Model) viewTabs() string {
-	tabs := m.currentTabs()
+	tabs := m.visibleTabs()
 	window := m.windows[m.winCursor]
 
 	var b strings.Builder
-	header := titleStyle.Render(fmt.Sprintf("Window %d · %d %s", window.Index, len(tabs), plural("tab", len(tabs))))
-	b.WriteString(truncate(header, m.width))
+	header := fmt.Sprintf("Window %d · %d %s", window.Index, len(tabs), plural("tab", len(tabs)))
+	if m.query != "" {
+		header += fmt.Sprintf(" of %d", len(m.currentTabs()))
+	}
+	b.WriteString(truncate(titleStyle.Render(header), m.width))
 	b.WriteString("\n\n")
 	visible := m.tabViewHeight()
 	for i := m.offset; i < min(m.offset+visible, len(tabs)); i++ {
@@ -397,9 +481,18 @@ func (m Model) viewTabs() string {
 		b.WriteString(truncate(row, m.width))
 		b.WriteString("\n")
 	}
+	if len(tabs) == 0 {
+		b.WriteString(dimStyle.Render("no matching tabs"))
+		b.WriteString("\n")
+	}
 	b.WriteString("\n")
+	if m.filtering {
+		prompt := "/" + m.query + "▏"
+		b.WriteString(truncate(prompt, m.width))
+		return b.String()
+	}
 	footer := dimStyle.Render(fmt.Sprintf(
-		"%d/%d · j/k wheel ctrl+d/u scroll · g/G ends · o open · esc back · q quit",
+		"%d/%d · j/k wheel ctrl+d/u scroll · g/G ends · / filter · o open · esc back · q quit",
 		m.tabCursor+1, len(tabs),
 	))
 	if m.notice != "" {

@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -364,5 +365,143 @@ func TestClickTabMovesCursor(t *testing.T) {
 	m = update(m, click(7))
 	if m.tabCursor != 19 {
 		t.Errorf("click below the last row should not move the cursor, tabCursor = %d", m.tabCursor)
+	}
+}
+
+func typeQuery(m Model, q string) Model {
+	m = update(m, key('/'))
+	for _, r := range q {
+		m = update(m, tea.KeyPressMsg(tea.Key{Code: r, Text: string(r)}))
+	}
+	return m
+}
+
+func TestMatchesTab(t *testing.T) {
+	tab := chrome.Tab{Title: "Go Playground", URL: "https://go.dev/play"}
+	cases := []struct {
+		query string
+		want  bool
+	}{
+		{"go", true},
+		{"PLAY", true},
+		{"playground", true},
+		{"dev", true},
+		{"go playground", true},
+		{"playground go", true},
+		{"go rust", false},
+		{"rust", false},
+		{"", true},
+	}
+	for _, c := range cases {
+		if got := matchesTab(tab, strings.Fields(strings.ToLower(c.query))); got != c.want {
+			t.Errorf("matchesTab(%q) = %v, want %v", c.query, got, c.want)
+		}
+	}
+}
+
+func TestFilterNarrowsTabsToMatches(t *testing.T) {
+	m := update(newLoaded(nil), key(tea.KeyEnter))
+	m = typeQuery(m, "charm")
+	if m.filtering != true {
+		t.Fatal("typing should keep the model in filter input mode")
+	}
+	tabs := m.visibleTabs()
+	if len(tabs) != 1 || tabs[0].Title != "Charm" {
+		t.Errorf("query %q: visible = %+v, want only Charm", m.query, tabs)
+	}
+}
+
+func TestFilterCursorResetsWhileTyping(t *testing.T) {
+	m := update(newLoaded(manyTabs(20)), key(tea.KeyEnter))
+	m = update(m, key('G'))
+	if m.tabCursor != 19 {
+		t.Fatalf("after G, tabCursor = %d, want 19", m.tabCursor)
+	}
+	m = typeQuery(m, "tab")
+	if m.tabCursor != 0 || m.offset != 0 {
+		t.Errorf("after typing, tabCursor = %d, offset = %d, want 0/0", m.tabCursor, m.offset)
+	}
+}
+
+func TestEnterLeavesFilterModeKeepsQuery(t *testing.T) {
+	m := typeQuery(update(newLoaded(nil), key(tea.KeyEnter)), "charm")
+	m = update(m, key(tea.KeyEnter))
+	if m.filtering {
+		t.Error("enter should leave filter input mode")
+	}
+	if m.query != "charm" {
+		t.Errorf("enter should keep the query, got %q", m.query)
+	}
+	if tabs := m.visibleTabs(); len(tabs) != 1 {
+		t.Errorf("filter should stay applied, visible = %+v", tabs)
+	}
+}
+
+func TestEscClearsFilterAndBacksOut(t *testing.T) {
+	m := typeQuery(update(newLoaded(nil), key(tea.KeyEnter)), "charm")
+	m = update(m, key(tea.KeyEscape))
+	if m.query != "" || m.filtering {
+		t.Errorf("esc should clear the query and leave input mode, got query %q filtering %v", m.query, m.filtering)
+	}
+	if tabs := m.visibleTabs(); len(tabs) != 2 {
+		t.Errorf("all tabs should be back, visible = %+v", tabs)
+	}
+	m = typeQuery(m, "charm")
+	m = update(m, key(tea.KeyEnter))
+	m = update(m, key(tea.KeyEscape))
+	if m.query != "" {
+		t.Fatalf("first esc should clear the query, got %q", m.query)
+	}
+	m = update(m, key(tea.KeyEscape))
+	if m.mode != modeWindows {
+		t.Errorf("esc with no query should back out to the windows view, mode = %v", m.mode)
+	}
+}
+
+func TestSlashReentersFilterMode(t *testing.T) {
+	m := typeQuery(update(newLoaded(nil), key(tea.KeyEnter)), "charm")
+	m = update(m, key(tea.KeyEnter))
+	m = update(m, key('/'))
+	if !m.filtering || m.query != "charm" {
+		t.Errorf("slash should resume editing the query, filtering = %v query = %q", m.filtering, m.query)
+	}
+}
+
+func TestBackspaceEditsQuery(t *testing.T) {
+	m := typeQuery(update(newLoaded(nil), key(tea.KeyEnter)), "charm")
+	m = update(m, key(tea.KeyBackspace))
+	if m.query != "char" {
+		t.Errorf("after backspace, query = %q, want %q", m.query, "char")
+	}
+}
+
+func TestOpenUsesFilteredTabIndices(t *testing.T) {
+	source := &fakeSource{windows: sampleWindows()}
+	m := newLoadedFrom(source)
+	m = update(m, key(tea.KeyEnter))
+	m = typeQuery(m, "charm")
+	m = update(m, key(tea.KeyEnter))
+	next, cmd := m.Update(key('o'))
+	if cmd == nil {
+		t.Fatal("o should start activating the filtered tab in Chrome")
+	}
+	runCmd(next.(Model), cmd)
+	if len(source.activated) != 1 || source.activated[0] != 2 {
+		t.Errorf("ActivateTab args = %v, want window 1's tab 2 via the filter", source.activated)
+	}
+	if len(source.activatedWins) != 1 || source.activatedWins[0] != 1 {
+		t.Errorf("ActivateTab window = %v, want window 1", source.activatedWins)
+	}
+}
+
+func TestFilterLeavesBackOutToWindows(t *testing.T) {
+	m := typeQuery(update(newLoaded(nil), key(tea.KeyEnter)), "charm")
+	m = update(m, key(tea.KeyEnter))
+	m = update(m, key('h'))
+	if m.mode != modeWindows {
+		t.Errorf("h should back out of the tabs view, mode = %v", m.mode)
+	}
+	if m.query != "" {
+		t.Errorf("backing out should clear the query, got %q", m.query)
 	}
 }
