@@ -211,50 +211,57 @@ func TestViewScrollsToKeepCursorVisible(t *testing.T) {
 	}
 }
 
-func TestHalfPageScrolling(t *testing.T) {
+func TestHalfPageScrollsContentWithoutMovingCursor(t *testing.T) {
 	m := resize(update(newLoaded(manyTabs(30)), key(tea.KeyEnter)), 80, 10)
 	m = update(m, key('G'))
-	if m.tabCursor != 29 {
-		t.Fatalf("after G, tabCursor = %d, want 29", m.tabCursor)
+	if m.tabCursor != 29 || m.offset != 24 {
+		t.Fatalf("after G, tabCursor = %d, offset = %d, want 29/24", m.tabCursor, m.offset)
 	}
 	m = update(m, key('u', tea.ModCtrl))
-	if m.tabCursor != 26 {
-		t.Errorf("after ctrl+u, tabCursor = %d, want 26", m.tabCursor)
+	if m.offset != 21 {
+		t.Errorf("after ctrl+u, offset = %d, want 21", m.offset)
+	}
+	if m.tabCursor != 29 {
+		t.Errorf("after ctrl+u, tabCursor = %d, want 29 (cursor should not move)", m.tabCursor)
 	}
 	m = update(m, key('d', tea.ModCtrl))
+	if m.offset != 24 {
+		t.Errorf("after ctrl+d, offset = %d, want 24 (clamped to the bottom)", m.offset)
+	}
 	if m.tabCursor != 29 {
-		t.Errorf("after ctrl+d, tabCursor = %d, want 29", m.tabCursor)
+		t.Errorf("after ctrl+d, tabCursor = %d, want 29 (cursor should not move)", m.tabCursor)
 	}
 }
 
-func TestMouseWheelScrolls(t *testing.T) {
+func TestMouseWheelScrollsContentWithoutMovingCursor(t *testing.T) {
 	m := resize(update(newLoaded(manyTabs(30)), key(tea.KeyEnter)), 80, 10)
 	m = update(m, key('G'))
 	m = update(m, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
-	if m.tabCursor != 26 {
-		t.Errorf("after wheel up, tabCursor = %d, want 26", m.tabCursor)
+	if m.offset != 21 {
+		t.Errorf("after wheel up, offset = %d, want 21", m.offset)
+	}
+	if m.tabCursor != 29 {
+		t.Errorf("after wheel up, tabCursor = %d, want 29 (cursor should not move)", m.tabCursor)
 	}
 	m = update(m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
-	if m.tabCursor != 29 {
-		t.Errorf("after wheel down, tabCursor = %d, want 29", m.tabCursor)
+	if m.offset != 24 {
+		t.Errorf("after wheel down, offset = %d, want 24 (clamped)", m.offset)
 	}
 }
 
-func TestResizeKeepsCursorVisible(t *testing.T) {
+func TestResizeClampsOffset(t *testing.T) {
 	m := resize(update(newLoaded(manyTabs(30)), key(tea.KeyEnter)), 80, 10)
 	m = update(m, key('G'))
 	if m.offset != 24 {
 		t.Fatalf("after G, offset = %d, want 24", m.offset)
 	}
 	m = resize(m, 80, 24)
-	visible := m.tabViewHeight()
-	if m.tabCursor < m.offset || m.tabCursor >= m.offset+visible {
-		t.Errorf("cursor %d outside view [%d, %d)", m.tabCursor, m.offset, m.offset+visible)
+	if want := max(0, 30-m.tabViewHeight()); m.offset != want {
+		t.Errorf("after growing, offset = %d, want %d", m.offset, want)
 	}
 	m = resize(m, 80, 6)
-	visible = m.tabViewHeight()
-	if m.tabCursor < m.offset || m.tabCursor >= m.offset+visible {
-		t.Errorf("after shrinking, cursor %d outside view [%d, %d)", m.tabCursor, m.offset, m.offset+visible)
+	if want := max(0, 30-m.tabViewHeight()); m.offset > want {
+		t.Errorf("after shrinking, offset = %d, want at most %d", m.offset, want)
 	}
 }
 

@@ -142,9 +142,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.Button {
 		case tea.MouseWheelUp:
-			m = m.moveTabCursor(-mouseWheelLines)
+			m = m.scrollTabs(-mouseWheelLines)
 		case tea.MouseWheelDown:
-			m = m.moveTabCursor(mouseWheelLines)
+			m = m.scrollTabs(mouseWheelLines)
 		}
 		return m, nil
 	case activatedMsg:
@@ -221,9 +221,9 @@ func (m Model) keyPressTabs(key string) (tea.Model, tea.Cmd) {
 		m.tabCursor = len(tabs) - 1
 		m.offset = max(0, len(tabs)-m.tabViewHeight())
 	case "ctrl+d":
-		m = m.moveTabCursor(max(1, m.tabViewHeight()/2))
+		m = m.scrollTabs(max(1, m.tabViewHeight()/2))
 	case "ctrl+u":
-		m = m.moveTabCursor(-max(1, m.tabViewHeight()/2))
+		m = m.scrollTabs(-max(1, m.tabViewHeight()/2))
 	case "o":
 		return m, m.activateTab()
 	}
@@ -263,13 +263,32 @@ func (m Model) clickRow(y int) Model {
 }
 
 // moveTabCursor returns the model with the tab cursor moved by delta rows,
-// kept inside the list, with the view scrolled so the cursor stays visible.
+// kept inside the list, with the view scrolled to bring the cursor back
+// into view if it left it.
 func (m Model) moveTabCursor(delta int) Model {
 	tabs := m.currentTabs()
 	if len(tabs) == 0 {
 		return m
 	}
 	m.tabCursor = min(max(m.tabCursor+delta, 0), len(tabs)-1)
+	m = m.bringCursorIntoView()
+	return m
+}
+
+// scrollTabs moves the list by delta rows without moving the cursor: the
+// selected tab stays selected while the content slides under it.
+func (m Model) scrollTabs(delta int) Model {
+	tabs := m.currentTabs()
+	if len(tabs) == 0 {
+		return m
+	}
+	m.offset = min(max(m.offset+delta, 0), max(0, len(tabs)-m.tabViewHeight()))
+	return m
+}
+
+// bringCursorInView scrolls the view the minimum distance needed so the
+// cursor is on screen again.
+func (m Model) bringCursorIntoView() Model {
 	visible := m.tabViewHeight()
 	if m.tabCursor < m.offset {
 		m.offset = m.tabCursor
@@ -296,13 +315,6 @@ func (m Model) clampOffset() Model {
 	}
 	m.offset = min(max(m.offset, 0), max(0, len(tabs)-m.tabViewHeight()))
 	m.tabCursor = min(max(m.tabCursor, 0), len(tabs)-1)
-	visible := m.tabViewHeight()
-	if m.tabCursor < m.offset {
-		m.offset = m.tabCursor
-	}
-	if m.tabCursor >= m.offset+visible {
-		m.offset = m.tabCursor - visible + 1
-	}
 	return m
 }
 
