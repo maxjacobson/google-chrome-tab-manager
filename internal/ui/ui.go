@@ -19,6 +19,8 @@ const (
 	loadTimeout = 30 * time.Second
 	// activateTimeout bounds one attempt to focus a tab in Chrome.
 	activateTimeout = 10 * time.Second
+	// noticeTimeout is how long a footer notice sticks around on its own.
+	noticeTimeout = 5 * time.Second
 	// spinnerFPS is how often the loading spinner animates.
 	spinnerFPS = 100 * time.Millisecond
 	// mouseWheelLines is how many rows one wheel notch moves.
@@ -65,6 +67,9 @@ type Model struct {
 	tabCursor int
 	offset    int
 	notice    string
+	// noticeGen counts notices so an expiring timer only clears the notice
+	// it was armed for, never a newer one.
+	noticeGen int
 
 	// filtering is true while the user is typing a query; the query stays
 	// applied (and the list filtered) after enter leaves input mode.
@@ -96,6 +101,11 @@ type activatedMsg struct {
 	err        error
 }
 
+// noticeExpiredMsg clears the footer notice five seconds after it was set.
+type noticeExpiredMsg struct {
+	gen int
+}
+
 func (m Model) load() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, loadTimeout)
@@ -107,6 +117,15 @@ func (m Model) load() tea.Cmd {
 
 func (m Model) spinnerTick() tea.Cmd {
 	return tea.Tick(spinnerFPS, func(time.Time) tea.Msg { return spinnerTickMsg{} })
+}
+
+// setNotice shows a message in the footer and returns a command that clears
+// it after noticeTimeout.
+func (m Model) setNotice(text string) (Model, tea.Cmd) {
+	m.notice = text
+	m.noticeGen++
+	gen := m.noticeGen
+	return m, tea.Tick(noticeTimeout, func(time.Time) tea.Msg { return noticeExpiredMsg{gen: gen} })
 }
 
 func (m Model) activateTab() tea.Cmd {
@@ -161,16 +180,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case activatedMsg:
 		switch {
 		case msg.err != nil:
-			m.notice = msg.err.Error()
+			return m.setNotice(msg.err.Error())
 		case !msg.found:
-			m.notice = "that tab is no longer open; refreshing"
-			return m, m.load()
+			m, notice := m.setNotice("that tab is no longer open; refreshing")
+			return m, tea.Batch(notice, m.load())
 		case msg.activation.Moved:
-			m.notice = fmt.Sprintf(
+			m, notice := m.setNotice(fmt.Sprintf(
 				"that tab is now window %d, tab %d; refreshing",
 				msg.activation.WindowIndex, msg.activation.TabIndex,
-			)
-			return m, m.load()
+			))
+			return m, tea.Batch(notice, m.load())
+		}
+		return m, nil
+	case noticeExpiredMsg:
+		if msg.gen == m.noticeGen {
+			m.notice = ""
 		}
 		return m, nil
 	case tea.MouseClickMsg:

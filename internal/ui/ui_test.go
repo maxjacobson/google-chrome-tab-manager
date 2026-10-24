@@ -571,3 +571,40 @@ func TestFilterLeavesBackOutToWindows(t *testing.T) {
 		t.Errorf("backing out should clear the query, got %q", m.query)
 	}
 }
+
+func TestNoticeExpiresAfterTimeout(t *testing.T) {
+	source := &fakeSource{
+		windows:    sampleWindows(),
+		found:      true,
+		activation: chrome.Activation{WindowIndex: 2, TabIndex: 1, Moved: true},
+	}
+	m := newLoadedFrom(source)
+	m = update(m, key(tea.KeyEnter))
+	next, cmd := m.Update(key('o'))
+	m, _ = runMsg(next.(Model), cmd)
+	if m.notice == "" {
+		t.Fatal("a moved tab should set a notice")
+	}
+	m = update(m, noticeExpiredMsg{gen: m.noticeGen})
+	if m.notice != "" {
+		t.Errorf("an expired notice should clear itself, got %q", m.notice)
+	}
+}
+
+func TestExpiredNoticeDoesNotClearNewerOne(t *testing.T) {
+	source := &fakeSource{
+		windows:    sampleWindows(),
+		found:      true,
+		activation: chrome.Activation{WindowIndex: 2, TabIndex: 1, Moved: true},
+	}
+	m := newLoadedFrom(source)
+	m = update(m, key(tea.KeyEnter))
+	next, cmd := m.Update(key('o'))
+	m, _ = runMsg(next.(Model), cmd)
+	staleGen := m.noticeGen - 1
+	m2, _ := m.setNotice("newer notice")
+	m2 = update(m2, noticeExpiredMsg{gen: staleGen})
+	if m2.notice != "newer notice" {
+		t.Errorf("an old timer should not clear a newer notice, got %q", m2.notice)
+	}
+}
