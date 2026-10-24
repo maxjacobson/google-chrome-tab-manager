@@ -84,3 +84,39 @@ func TestParseTabsErrorMentionsLine(t *testing.T) {
 		t.Errorf("error should mention the offending line, got: %v", err)
 	}
 }
+
+func TestParseActivation(t *testing.T) {
+	cases := []struct {
+		output     string
+		activation Activation
+		found      bool
+	}{
+		{"ok 3 12", Activation{WindowIndex: 3, TabIndex: 12}, true},
+		{"moved 1 5", Activation{WindowIndex: 1, TabIndex: 5, Moved: true}, true},
+		{"missing", Activation{}, false},
+	}
+	for _, c := range cases {
+		got, found, err := ParseActivation(c.output)
+		if err != nil {
+			t.Errorf("ParseActivation(%q): %v", c.output, err)
+			continue
+		}
+		if got != c.activation || found != c.found {
+			t.Errorf("ParseActivation(%q) = %+v, %v; want %+v, %v", c.output, got, found, c.activation, c.found)
+		}
+	}
+}
+
+func TestParseActivationRejectsBadOutput(t *testing.T) {
+	for _, output := range []string{"", "ok 3", "ok x y", "moved 3 z", "weird 1 2", "ok 1 2 3"} {
+		if _, _, err := ParseActivation(output); err == nil {
+			t.Errorf("ParseActivation(%q) succeeded, want error", output)
+		}
+	}
+}
+
+func TestEscapeAppleScript(t *testing.T) {
+	if got := escapeAppleScript(`a"b\c`); got != `a\"b\\c` {
+		t.Errorf("escapeAppleScript = %q, want %q", got, `a\"b\\c`)
+	}
+}

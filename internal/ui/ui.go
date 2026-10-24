@@ -38,7 +38,7 @@ var (
 // chrome.Chrome implements it; tests substitute fakes.
 type Source interface {
 	ListTabs(ctx context.Context) ([]chrome.Window, error)
-	ActivateTab(ctx context.Context, windowIndex, tabIndex int) error
+	ActivateTab(ctx context.Context, url string, windowIndex, tabIndex int) (chrome.Activation, bool, error)
 }
 
 type mode int
@@ -88,9 +88,12 @@ type tabsMsg struct {
 // spinnerTickMsg advances the loading spinner.
 type spinnerTickMsg struct{}
 
-// activatedMsg reports the outcome of focusing a tab in Chrome.
+// activatedMsg reports the outcome of focusing a tab in Chrome: where it
+// was found (if anywhere), and any error.
 type activatedMsg struct {
-	err error
+	activation chrome.Activation
+	found      bool
+	err        error
 }
 
 func (m Model) load() tea.Cmd {
@@ -112,7 +115,8 @@ func (m Model) activateTab() tea.Cmd {
 		tab := m.visibleTabs()[m.tabCursor]
 		ctx, cancel := context.WithTimeout(m.ctx, activateTimeout)
 		defer cancel()
-		return activatedMsg{err: m.source.ActivateTab(ctx, window.Index, tab.Index)}
+		activation, found, err := m.source.ActivateTab(ctx, tab.URL, window.Index, tab.Index)
+		return activatedMsg{activation: activation, found: found, err: err}
 	}
 }
 
@@ -140,6 +144,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.windows = msg.windows
 		m.winCursor = 0
+		m.tabCursor = 0
+		m.offset = 0
 		return m, nil
 	case tea.MouseWheelMsg:
 		if m.loading || m.err != nil || m.mode != modeTabs {
@@ -153,8 +159,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case activatedMsg:
-		if msg.err != nil {
+		switch {
+		case msg.err != nil:
 			m.notice = msg.err.Error()
+		case !msg.found:
+			m.notice = "that tab is no longer open; refreshing"
+			return m, m.load()
+		case msg.activation.Moved:
+			m.notice = fmt.Sprintf(
+				"that tab is now window %d, tab %d; refreshing",
+				msg.activation.WindowIndex, msg.activation.TabIndex,
+			)
+			return m, m.load()
 		}
 		return m, nil
 	case tea.MouseClickMsg:
@@ -193,6 +209,11 @@ func (m Model) keyPress(key string) (tea.Model, tea.Cmd) {
 	}
 	if m.loading || m.err != nil {
 		return m, nil
+	}
+	switch key {
+	case "r":
+		m.loading = true
+		return m, m.load()
 	}
 	if m.mode == modeWindows {
 		return m.keyPressWindows(key)

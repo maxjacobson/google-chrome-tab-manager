@@ -77,29 +77,96 @@ func (Chrome) ListTabs(ctx context.Context) ([]Window, error) {
 	return ParseTabs(stdout.String())
 }
 
-// ActivateTab brings Chrome to the front with the given window and tab in
-// focus. Indices are 1-based, as in the tab listing.
-func (Chrome) ActivateTab(ctx context.Context, windowIndex, tabIndex int) error {
-	if runtime.GOOS != "darwin" {
-		return fmt.Errorf("activating a Chrome tab only works on macOS")
-	}
-	script := fmt.Sprintf(`
+// Activation reports where a tab ended up being focused in Chrome.
+type Activation struct {
+	WindowIndex int
+	TabIndex    int
+	Moved       bool
+}
+
+// activateTabScript focuses the tab with targetURL. Chrome renumbers
+// windows (by front-to-back order) and tabs (as they open and close), so
+// indices go stale; the remembered position is a fast path, and the scan
+// afterwards finds the tab by URL when the position no longer matches. It
+// answers "ok <window> <tab>", "moved <window> <tab>", or "missing".
+const activateTabScript = `
 tell application "Google Chrome"
     activate
-    set active tab index of window %d to %d
-    set index of window %d to 1
+    set targetURL to "%s"
+    try
+        if URL of tab %d of window %d is targetURL then
+            set active tab index of window %d to %d
+            set index of window %d to 1
+            return "ok " & %d & " " & %d
+        end if
+    end try
+    repeat with w from 1 to count of windows
+        try
+            set tabUrls to URL of tabs of window w
+            repeat with t from 1 to count of tabUrls
+                if item t of tabUrls is targetURL then
+                    set active tab index of window w to t
+                    set index of window w to 1
+                    return "moved " & w & " " & t
+                end if
+            end repeat
+        end try
+    end repeat
+    return "missing"
 end tell
-`, windowIndex, tabIndex, windowIndex)
-	var stderr bytes.Buffer
+`
+
+// ActivateTab brings Chrome to the front with the tab whose URL matches,
+// raising its window. It trusts the remembered window and tab indices only
+// if the URL there still matches; otherwise it finds the tab by scanning
+// each window's URLs. found is false when no open tab has the URL.
+func (Chrome) ActivateTab(ctx context.Context, url string, windowIndex, tabIndex int) (Activation, bool, error) {
+	if runtime.GOOS != "darwin" {
+		return Activation{}, false, fmt.Errorf("activating a Chrome tab only works on macOS")
+	}
+	script := fmt.Sprintf(activateTabScript, escapeAppleScript(url), windowIndex, tabIndex, windowIndex, tabIndex, windowIndex, windowIndex, tabIndex)
+	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return fmt.Errorf("running osascript: %w: %s", err, msg)
+			return Activation{}, false, fmt.Errorf("running osascript: %w: %s", err, msg)
 		}
-		return fmt.Errorf("running osascript: %w", err)
+		return Activation{}, false, fmt.Errorf("running osascript: %w", err)
 	}
-	return nil
+	return ParseActivation(strings.TrimSpace(stdout.String()))
+}
+
+// ParseActivation parses activateTabScript's answer.
+func ParseActivation(output string) (Activation, bool, error) {
+	fields := strings.Fields(output)
+	if len(fields) == 0 {
+		return Activation{}, false, fmt.Errorf("unexpected activation output %q", output)
+	}
+	switch fields[0] {
+	case "ok", "moved":
+		if len(fields) != 3 {
+			return Activation{}, false, fmt.Errorf("unexpected activation output %q", output)
+		}
+		windowIndex, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return Activation{}, false, fmt.Errorf("parsing window index in %q: %w", output, err)
+		}
+		tabIndex, err := strconv.Atoi(fields[2])
+		if err != nil {
+			return Activation{}, false, fmt.Errorf("parsing tab index in %q: %w", output, err)
+		}
+		return Activation{WindowIndex: windowIndex, TabIndex: tabIndex, Moved: fields[0] == "moved"}, true, nil
+	case "missing":
+		return Activation{}, false, nil
+	}
+	return Activation{}, false, fmt.Errorf("unexpected activation output %q", output)
+}
+
+func escapeAppleScript(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	return strings.ReplaceAll(s, "\"", "\\\"")
 }
 
 // ParseTabs parses the TSV output of listTabsScript into ordered windows.

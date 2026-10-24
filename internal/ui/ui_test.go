@@ -12,21 +12,33 @@ import (
 )
 
 type fakeSource struct {
-	windows       []chrome.Window
-	err           error
-	activateErr   error
-	activated     []int
-	activatedWins []int
+	windows     []chrome.Window
+	err         error
+	activateURL string
+	activation  chrome.Activation
+	found       bool
+	activateErr error
+	activated   []int
+	urls        []string
 }
 
 func (f *fakeSource) ListTabs(context.Context) ([]chrome.Window, error) {
 	return f.windows, f.err
 }
 
-func (f *fakeSource) ActivateTab(_ context.Context, windowIndex, tabIndex int) error {
+func (f *fakeSource) ActivateTab(_ context.Context, url string, windowIndex, tabIndex int) (chrome.Activation, bool, error) {
 	f.activated = append(f.activated, tabIndex)
-	f.activatedWins = append(f.activatedWins, windowIndex)
-	return f.activateErr
+	f.urls = append(f.urls, url)
+	if f.activateErr != nil {
+		return chrome.Activation{}, false, f.activateErr
+	}
+	if !f.found {
+		return chrome.Activation{}, false, nil
+	}
+	if f.activation.Moved {
+		f.activated[len(f.activated)-1] = f.activation.TabIndex
+	}
+	return f.activation, f.found, nil
 }
 
 func sampleWindows() []chrome.Window {
@@ -274,8 +286,8 @@ func TestLoadErrorKeptForDisplay(t *testing.T) {
 	}
 }
 
-func TestOpenActivatesSelectedTab(t *testing.T) {
-	source := &fakeSource{windows: sampleWindows()}
+func TestOpenActivatesSelectedTabByURL(t *testing.T) {
+	source := &fakeSource{windows: sampleWindows(), found: true}
 	m := newLoadedFrom(source)
 	m = update(m, key(tea.KeyEnter))
 	m = update(m, key('j'))
@@ -284,11 +296,11 @@ func TestOpenActivatesSelectedTab(t *testing.T) {
 		t.Fatal("o should start activating the tab in Chrome")
 	}
 	runCmd(next.(Model), cmd)
+	if len(source.urls) != 1 || source.urls[0] != "https://charm.sh" {
+		t.Errorf("ActivateTab url = %v, want https://charm.sh", source.urls)
+	}
 	if len(source.activated) != 1 || source.activated[0] != 2 {
 		t.Errorf("ActivateTab args = %v, want tab 2", source.activated)
-	}
-	if len(source.activatedWins) != 1 || source.activatedWins[0] != 1 {
-		t.Errorf("ActivateTab window = %v, want window 1", source.activatedWins)
 	}
 }
 
@@ -307,6 +319,60 @@ func TestOpenShowsErrorNotice(t *testing.T) {
 	m = update(m, key('j'))
 	if m.notice != "" {
 		t.Errorf("notice should clear on the next keypress, got %q", m.notice)
+	}
+}
+
+func runMsg(m Model, cmd tea.Cmd) (Model, tea.Cmd) {
+	if cmd == nil {
+		return m, nil
+	}
+	next, nextCmd := m.Update(cmd())
+	return next.(Model), nextCmd
+}
+
+func TestOpenMissingTabRefreshesList(t *testing.T) {
+	source := &fakeSource{windows: sampleWindows()}
+	m := newLoadedFrom(source)
+	m = update(m, key(tea.KeyEnter))
+	next, cmd := m.Update(key('o'))
+	m, refresh := runMsg(next.(Model), cmd)
+	if m.notice == "" {
+		t.Fatal("a missing tab should set a notice")
+	}
+	if refresh == nil {
+		t.Error("a missing tab should trigger a refresh")
+	}
+}
+
+func TestOpenMovedTabNotifiesAndRefreshes(t *testing.T) {
+	source := &fakeSource{
+		windows:    sampleWindows(),
+		found:      true,
+		activation: chrome.Activation{WindowIndex: 2, TabIndex: 1, Moved: true},
+	}
+	m := newLoadedFrom(source)
+	m = update(m, key(tea.KeyEnter))
+	next, cmd := m.Update(key('o'))
+	m, refresh := runMsg(next.(Model), cmd)
+	if m.notice == "" || !strings.Contains(m.notice, "window 2") {
+		t.Fatalf("a moved tab should explain where it went, notice = %q", m.notice)
+	}
+	if refresh == nil {
+		t.Error("a moved tab should trigger a refresh")
+	}
+}
+
+func TestRefreshKeyReloadsList(t *testing.T) {
+	source := &fakeSource{windows: sampleWindows()}
+	m := newLoadedFrom(source)
+	m = update(m, key(tea.KeyEnter))
+	next, cmd := m.Update(key('r'))
+	if cmd == nil {
+		t.Fatal("r should start a reload")
+	}
+	m = runCmd(next.(Model), cmd)
+	if m.notice != "" {
+		t.Errorf("r should not set a notice, got %q", m.notice)
 	}
 }
 
@@ -489,8 +555,8 @@ func TestOpenUsesFilteredTabIndices(t *testing.T) {
 	if len(source.activated) != 1 || source.activated[0] != 2 {
 		t.Errorf("ActivateTab args = %v, want window 1's tab 2 via the filter", source.activated)
 	}
-	if len(source.activatedWins) != 1 || source.activatedWins[0] != 1 {
-		t.Errorf("ActivateTab window = %v, want window 1", source.activatedWins)
+	if len(source.urls) != 1 || source.urls[0] != "https://charm.sh" {
+		t.Errorf("ActivateTab url = %v, want https://charm.sh", source.urls)
 	}
 }
 

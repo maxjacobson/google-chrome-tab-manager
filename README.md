@@ -45,6 +45,7 @@ Requires [Go](https://go.dev) and [just](https://github.com/casey/just).
 | click       | open a window; focus a tab      |
 | `/`         | filter tabs by title and URL    |
 | `o`         | show the selected tab in Chrome |
+| `r`         | refresh the tab list            |
 | `q`         | quit                            |
 
 ## Why macOS only?
