@@ -361,9 +361,9 @@ func (m Model) keyPressTabs(key string) (tea.Model, tea.Cmd) {
 			m.offset = max(0, len(tabs)-m.tabViewHeight())
 		}
 	case "ctrl+d":
-		m = m.scrollTabs(max(1, m.tabViewHeight()/2))
+		m = m.pageTabs(max(1, m.tabViewHeight()/2))
 	case "ctrl+u":
-		m = m.scrollTabs(-max(1, m.tabViewHeight()/2))
+		m = m.pageTabs(-max(1, m.tabViewHeight()/2))
 	case "o":
 		if m.tabCursor < len(tabs) {
 			return m, m.activateTab()
@@ -525,13 +525,23 @@ func (m Model) moveTabCursor(delta int) Model {
 }
 
 // scrollTabs moves the list by delta rows without moving the cursor: the
-// selected tab stays selected while the content slides under it.
+// selected tab stays selected while the content slides under it. The mouse
+// wheel uses this.
 func (m Model) scrollTabs(delta int) Model {
 	tabs := m.visibleTabs()
 	if len(tabs) == 0 {
 		return m
 	}
 	m.offset = min(max(m.offset+delta, 0), max(0, len(tabs)-m.tabViewHeight()))
+	return m
+}
+
+// pageTabs scrolls the list by delta rows and moves the cursor onto the
+// first visible row, so ctrl+d and ctrl+u carry the cursor with the page.
+func (m Model) pageTabs(delta int) Model {
+	m = m.scrollTabs(delta)
+	tabs := m.visibleTabs()
+	m.tabCursor = min(m.offset, max(len(tabs)-1, 0))
 	return m
 }
 

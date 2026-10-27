@@ -264,7 +264,7 @@ func TestViewScrollsToKeepCursorVisible(t *testing.T) {
 	}
 }
 
-func TestHalfPageScrollsContentWithoutMovingCursor(t *testing.T) {
+func TestHalfPageCarriesCursorToTopOfPage(t *testing.T) {
 	m := resize(update(newLoaded(manyTabs(30)), key(tea.KeyEnter)), 80, 10)
 	m = update(m, key('G'))
 	if m.tabCursor != 29 || m.offset != 24 {
@@ -274,15 +274,15 @@ func TestHalfPageScrollsContentWithoutMovingCursor(t *testing.T) {
 	if m.offset != 21 {
 		t.Errorf("after ctrl+u, offset = %d, want 21", m.offset)
 	}
-	if m.tabCursor != 29 {
-		t.Errorf("after ctrl+u, tabCursor = %d, want 29 (cursor should not move)", m.tabCursor)
+	if m.tabCursor != 21 {
+		t.Errorf("after ctrl+u, tabCursor = %d, want 21 (the top of the page)", m.tabCursor)
 	}
 	m = update(m, key('d', tea.ModCtrl))
 	if m.offset != 24 {
 		t.Errorf("after ctrl+d, offset = %d, want 24 (clamped to the bottom)", m.offset)
 	}
-	if m.tabCursor != 29 {
-		t.Errorf("after ctrl+d, tabCursor = %d, want 29 (cursor should not move)", m.tabCursor)
+	if m.tabCursor != 24 {
+		t.Errorf("after ctrl+d, tabCursor = %d, want 24 (the top of the page)", m.tabCursor)
 	}
 }
 
