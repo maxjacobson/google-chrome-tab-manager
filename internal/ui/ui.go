@@ -83,6 +83,9 @@ type Model struct {
 	selected map[string]bool
 	// confirming is true while the "close N tabs?" prompt is up.
 	confirming bool
+	// restoreTabCursor is where the reload after a close should put the
+	// cursor: the row just above the first closed tab. -1 means no restore.
+	restoreTabCursor int
 
 	// filtering is true while the user is typing a query; the query stays
 	// applied (and the list filtered) after enter leaves input mode.
@@ -94,7 +97,7 @@ type Model struct {
 
 // New builds a Model that loads tabs from source on startup.
 func New(ctx context.Context, source Source) Model {
-	return Model{source: source, ctx: ctx, loading: true}
+	return Model{source: source, ctx: ctx, loading: true, restoreTabCursor: -1}
 }
 
 // tabsMsg carries the open windows (or a listing error).
@@ -196,8 +199,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.windows = msg.windows
 		m.winCursor = min(m.winCursor, max(len(m.windows)-1, 0))
-		m.tabCursor = 0
+		if m.restoreTabCursor >= 0 {
+			m.tabCursor = min(m.restoreTabCursor, max(len(m.visibleTabs())-1, 0))
+			m.restoreTabCursor = -1
+		} else {
+			m.tabCursor = 0
+		}
 		m.offset = 0
+		m = m.bringCursorIntoView()
 		return m, nil
 	case tea.MouseWheelMsg:
 		if m.loading || m.err != nil || m.mode != modeTabs {
@@ -237,6 +246,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			return m.setNotice(msg.err.Error())
 		}
+		m.restoreTabCursor = m.cursorAfterClose()
 		m.selected = nil
 		m.loading = true
 		m, notice := m.setNotice(fmt.Sprintf("closed %d %s", msg.count, plural("tab", msg.count)))
@@ -370,6 +380,19 @@ func (m Model) keyPressTabs(key string) (tea.Model, tea.Cmd) {
 		m.filtering = true
 	}
 	return m, nil
+}
+
+// cursorAfterClose reports where the cursor should land after the marked
+// tabs close: one row above the first one marked in the current window, so
+// closing tabs 6, 8, and 10 leaves the cursor on tab 5. Closing the first
+// tab leaves the cursor on the new first row.
+func (m Model) cursorAfterClose() int {
+	for i, tab := range m.currentTabs() {
+		if m.selected[tab.URL] {
+			return max(i-1, 0)
+		}
+	}
+	return 0
 }
 
 // toggleSelect flips whether the tab under the cursor is marked for

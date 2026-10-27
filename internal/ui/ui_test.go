@@ -36,8 +36,28 @@ func (f *fakeSource) CloseTabs(_ context.Context, urls []string) (int, error) {
 	if f.closeErr != nil {
 		return 0, f.closeErr
 	}
+	set := make(map[string]bool, len(urls))
+	for _, url := range urls {
+		set[url] = true
+	}
+	removed := 0
+	var windows []chrome.Window
+	for _, w := range f.windows {
+		var kept []chrome.Tab
+		for _, tab := range w.Tabs {
+			if set[tab.URL] {
+				removed++
+				continue
+			}
+			kept = append(kept, tab)
+		}
+		if len(kept) > 0 {
+			windows = append(windows, chrome.Window{Index: w.Index, Tabs: kept})
+		}
+	}
+	f.windows = windows
 	if f.closeN == 0 {
-		f.closeN = len(urls)
+		f.closeN = removed
 	}
 	return f.closeN, nil
 }
@@ -771,6 +791,43 @@ func TestEnterConfirmsClose(t *testing.T) {
 	m, _ = runMsg(m, cmd)
 	if len(source.closed) != 1 {
 		t.Errorf("enter should confirm the close, closed = %v", source.closed)
+	}
+}
+
+func closeAndReload(m Model, source *fakeSource) Model {
+	m = update(m, key('d'))
+	m, cmd := runKey(m, key('y'))
+	m, _ = runMsg(m, cmd)
+	return update(m, tabsMsg{windows: source.windows})
+}
+
+func TestCloseLandsCursorAboveFirstClosedTab(t *testing.T) {
+	source := &fakeSource{windows: manyTabs(10)}
+	m := newLoadedFrom(source)
+	m = update(m, key(tea.KeyEnter))
+	for _, target := range []int{5, 7, 9} {
+		for m.tabCursor < target {
+			m = update(m, key('j'))
+		}
+		m = update(m, key(' '))
+	}
+	m = closeAndReload(m, source)
+	if m.tabCursor != 4 {
+		t.Errorf("after closing tabs 6, 8, and 10, tabCursor = %d, want 4 (tab 5)", m.tabCursor)
+	}
+	if tabs := m.visibleTabs(); tabs[m.tabCursor].Index != 5 {
+		t.Errorf("cursor sits on tab %d, want tab 5", tabs[m.tabCursor].Index)
+	}
+}
+
+func TestCloseOfFirstTabLandsCursorOnTop(t *testing.T) {
+	source := &fakeSource{windows: manyTabs(3)}
+	m := newLoadedFrom(source)
+	m = update(m, key(tea.KeyEnter))
+	m = update(m, key(' '))
+	m = closeAndReload(m, source)
+	if m.tabCursor != 0 {
+		t.Errorf("after closing the first tab, tabCursor = %d, want 0", m.tabCursor)
 	}
 }
 
