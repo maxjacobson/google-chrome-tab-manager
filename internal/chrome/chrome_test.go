@@ -115,6 +115,35 @@ func TestParseActivationRejectsBadOutput(t *testing.T) {
 	}
 }
 
+func TestParseCloseCount(t *testing.T) {
+	for output, want := range map[string]int{"0": 0, "7": 7, " 3 ": 3} {
+		got, err := ParseCloseCount(output)
+		if err != nil {
+			t.Errorf("ParseCloseCount(%q): %v", output, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("ParseCloseCount(%q) = %d, want %d", output, got, want)
+		}
+	}
+}
+
+func TestParseCloseCountRejectsBadOutput(t *testing.T) {
+	for _, output := range []string{"", "x", "3 tabs"} {
+		if _, err := ParseCloseCount(output); err == nil {
+			t.Errorf("ParseCloseCount(%q) succeeded, want error", output)
+		}
+	}
+}
+
+func TestAppleScriptList(t *testing.T) {
+	got := appleScriptList([]string{"https://go.dev", `https://x/"y"`})
+	want := `"https://go.dev", "https://x/\"y\""`
+	if got != want {
+		t.Errorf("appleScriptList = %q, want %q", got, want)
+	}
+}
+
 func TestEscapeAppleScript(t *testing.T) {
 	if got := escapeAppleScript(`a"b\c`); got != `a\"b\\c` {
 		t.Errorf("escapeAppleScript = %q, want %q", got, `a\"b\\c`)

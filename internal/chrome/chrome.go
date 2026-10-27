@@ -164,6 +164,72 @@ func ParseActivation(output string) (Activation, bool, error) {
 	return Activation{}, false, fmt.Errorf("unexpected activation output %q", output)
 }
 
+// closeTabsScript closes every tab whose URL is in the target list and
+// reports how many it closed. Chrome renumbers tabs as they close, so it
+// visits each window's tabs from last to first: closing tab t only shifts
+// tabs after t, which were already visited.
+const closeTabsScript = `
+tell application "Google Chrome"
+    set targets to {%s}
+    set closed to 0
+    repeat with w from 1 to count of windows
+        try
+            set tabUrls to URL of tabs of window w
+            repeat with t from count of tabUrls to 1 by -1
+                if item t of tabUrls is in targets then
+                    close tab t of window w
+                    set closed to closed + 1
+                end if
+            end repeat
+        end try
+    end repeat
+    return closed as text
+end tell
+`
+
+// CloseTabs closes every open tab whose URL is in urls, across all windows,
+// and returns how many tabs it closed. Tabs are matched by URL because
+// Chrome's window and tab numbering shifts as tabs close; a URL that is open
+// more than once is closed in every window that holds it.
+func (Chrome) CloseTabs(ctx context.Context, urls []string) (int, error) {
+	if runtime.GOOS != "darwin" {
+		return 0, fmt.Errorf("closing Chrome tabs only works on macOS")
+	}
+	if len(urls) == 0 {
+		return 0, nil
+	}
+	script := fmt.Sprintf(closeTabsScript, appleScriptList(urls))
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return 0, fmt.Errorf("running osascript: %w: %s", err, msg)
+		}
+		return 0, fmt.Errorf("running osascript: %w", err)
+	}
+	return ParseCloseCount(strings.TrimSpace(stdout.String()))
+}
+
+// ParseCloseCount parses closeTabsScript's answer: the number of closed tabs.
+func ParseCloseCount(output string) (int, error) {
+	count, err := strconv.Atoi(strings.TrimSpace(output))
+	if err != nil {
+		return 0, fmt.Errorf("unexpected close output %q: %w", output, err)
+	}
+	return count, nil
+}
+
+// appleScriptList renders urls as an AppleScript list literal.
+func appleScriptList(urls []string) string {
+	quoted := make([]string, len(urls))
+	for i, url := range urls {
+		quoted[i] = `"` + escapeAppleScript(url) + `"`
+	}
+	return strings.Join(quoted, ", ")
+}
+
 func escapeAppleScript(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	return strings.ReplaceAll(s, "\"", "\\\"")
