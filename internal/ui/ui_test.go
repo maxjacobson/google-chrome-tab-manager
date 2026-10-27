@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -20,10 +21,25 @@ type fakeSource struct {
 	activateErr error
 	activated   []int
 	urls        []string
+
+	closed   []string
+	closeN   int
+	closeErr error
 }
 
 func (f *fakeSource) ListTabs(context.Context) ([]chrome.Window, error) {
 	return f.windows, f.err
+}
+
+func (f *fakeSource) CloseTabs(_ context.Context, urls []string) (int, error) {
+	f.closed = append(f.closed, urls...)
+	if f.closeErr != nil {
+		return 0, f.closeErr
+	}
+	if f.closeN == 0 {
+		f.closeN = len(urls)
+	}
+	return f.closeN, nil
 }
 
 func (f *fakeSource) ActivateTab(_ context.Context, url string, windowIndex, tabIndex int) (chrome.Activation, bool, error) {
@@ -56,7 +72,11 @@ func sampleWindows() []chrome.Window {
 func manyTabs(n int) []chrome.Window {
 	tabs := make([]chrome.Tab, n)
 	for i := range tabs {
-		tabs[i] = chrome.Tab{Index: i + 1, URL: "https://example.com", Title: "Tab"}
+		tabs[i] = chrome.Tab{
+			Index: i + 1,
+			URL:   fmt.Sprintf("https://example.com/%d", i+1),
+			Title: "Tab",
+		}
 	}
 	return []chrome.Window{{Index: 1, Tabs: tabs}}
 }
@@ -328,6 +348,11 @@ func runMsg(m Model, cmd tea.Cmd) (Model, tea.Cmd) {
 	}
 	next, nextCmd := m.Update(cmd())
 	return next.(Model), nextCmd
+}
+
+func runKey(m Model, msg tea.Msg) (Model, tea.Cmd) {
+	next, cmd := m.Update(msg)
+	return next.(Model), cmd
 }
 
 func TestOpenMissingTabRefreshesList(t *testing.T) {
@@ -606,5 +631,212 @@ func TestExpiredNoticeDoesNotClearNewerOne(t *testing.T) {
 	m2 = update(m2, noticeExpiredMsg{gen: staleGen})
 	if m2.notice != "newer notice" {
 		t.Errorf("an old timer should not clear a newer notice, got %q", m2.notice)
+	}
+}
+
+func TestSpaceMarksAndUnmarksTab(t *testing.T) {
+	m := update(newLoaded(nil), key(tea.KeyEnter))
+	m = update(m, key(' '))
+	if !m.selected["https://go.dev"] {
+		t.Errorf("space should mark the first tab, selected = %v", m.selected)
+	}
+	m = update(m, key(' '))
+	if m.selected["https://go.dev"] {
+		t.Errorf("space again should unmark the tab, selected = %v", m.selected)
+	}
+}
+
+func TestSpaceIgnoresTabWithoutURL(t *testing.T) {
+	windows := []chrome.Window{{Index: 1, Tabs: []chrome.Tab{{Index: 1, Title: "No URL"}}}}
+	m := update(newLoaded(windows), key(tea.KeyEnter))
+	m = update(m, key(' '))
+	if len(m.selected) != 0 {
+		t.Errorf("a tab with no URL should not be markable, selected = %v", m.selected)
+	}
+}
+
+func TestMarkedTabsRenderCheckmarks(t *testing.T) {
+	m := update(newLoaded(nil), key(tea.KeyEnter))
+	m = update(m, key(' '))
+	view := m.View().Content
+	if !strings.Contains(view, "✓") {
+		t.Errorf("a marked tab should show a checkmark, view:\n%s", view)
+	}
+	if !strings.Contains(view, "1 selected") {
+		t.Errorf("the footer should count marked tabs, view:\n%s", view)
+	}
+}
+
+func TestDWithNothingMarkedSetsNotice(t *testing.T) {
+	source := &fakeSource{windows: sampleWindows()}
+	m := newLoadedFrom(source)
+	m = update(m, key(tea.KeyEnter))
+	next, cmd := m.Update(key('d'))
+	m = next.(Model)
+	if m.confirming {
+		t.Error("d with nothing marked should not prompt to close")
+	}
+	if m.notice == "" {
+		t.Error("d with nothing marked should explain how to mark tabs")
+	}
+	if cmd == nil {
+		t.Error("d with nothing marked should arm the notice timer")
+	}
+	if len(source.closed) != 0 {
+		t.Errorf("nothing should have been closed, closed = %v", source.closed)
+	}
+}
+
+func TestDAsksForConfirmation(t *testing.T) {
+	m := update(newLoaded(nil), key(tea.KeyEnter))
+	m = update(m, key(' '))
+	m = update(m, key('j'))
+	m = update(m, key(' '))
+	m = update(m, key('d'))
+	if !m.confirming {
+		t.Fatal("d should ask before closing tabs")
+	}
+	view := m.View().Content
+	if !strings.Contains(view, "close 2 tabs?") {
+		t.Errorf("the prompt should count the marked tabs, view:\n%s", view)
+	}
+}
+
+func TestConfirmingIgnoresOtherKeys(t *testing.T) {
+	m := update(newLoaded(manyTabs(20)), key(tea.KeyEnter))
+	m = update(m, key(' '))
+	m = update(m, key('d'))
+	m = update(m, key('G'))
+	if !m.confirming {
+		t.Error("a stray key should not dismiss the close prompt")
+	}
+	if m.tabCursor != 0 {
+		t.Errorf("a stray key should not move the cursor, tabCursor = %d", m.tabCursor)
+	}
+	m = update(m, click(2))
+	if m.tabCursor != 0 {
+		t.Errorf("a click should not move the cursor behind the prompt, tabCursor = %d", m.tabCursor)
+	}
+}
+
+func TestConfirmingClosesMarkedTabsByURL(t *testing.T) {
+	source := &fakeSource{windows: sampleWindows()}
+	m := newLoadedFrom(source)
+	m = update(m, key(tea.KeyEnter))
+	m = update(m, key(' '))
+	m = update(m, key('j'))
+	m = update(m, key(' '))
+	m = update(m, key('d'))
+	m, cmd := runKey(m, key('y'))
+	m, refresh := runMsg(m, cmd)
+	if m.confirming {
+		t.Error("y should settle the prompt")
+	}
+	if len(source.closed) != 2 {
+		t.Fatalf("CloseTabs urls = %v, want both marked URLs", source.closed)
+	}
+	if !contains(source.closed, "https://go.dev") || !contains(source.closed, "https://charm.sh") {
+		t.Errorf("CloseTabs urls = %v, want go.dev and charm.sh", source.closed)
+	}
+	if refresh == nil {
+		t.Error("closing tabs should refresh the list")
+	}
+	if len(m.selected) != 0 {
+		t.Errorf("closing should clear the marks, selected = %v", m.selected)
+	}
+	if !m.loading {
+		t.Error("the model should be reloading after closing tabs")
+	}
+	if m.notice == "" || !strings.Contains(m.notice, "closed 2") {
+		t.Errorf("the notice should count closed tabs, got %q", m.notice)
+	}
+}
+
+func contains(urls []string, url string) bool {
+	for _, u := range urls {
+		if u == url {
+			return true
+		}
+	}
+	return false
+}
+
+func TestEnterConfirmsClose(t *testing.T) {
+	source := &fakeSource{windows: sampleWindows()}
+	m := newLoadedFrom(source)
+	m = update(m, key(tea.KeyEnter))
+	m = update(m, key(' '))
+	m = update(m, key('d'))
+	m, cmd := runKey(m, key(tea.KeyEnter))
+	m, _ = runMsg(m, cmd)
+	if len(source.closed) != 1 {
+		t.Errorf("enter should confirm the close, closed = %v", source.closed)
+	}
+}
+
+func TestDecliningCloseKeepsMarks(t *testing.T) {
+	for _, msg := range []tea.Msg{key('n'), key(tea.KeyEscape)} {
+		source := &fakeSource{windows: sampleWindows()}
+		m := newLoadedFrom(source)
+		m = update(m, key(tea.KeyEnter))
+		m = update(m, key(' '))
+		next, _ := m.Update(key('d'))
+		m = update(next.(Model), msg)
+		if m.confirming {
+			t.Errorf("%v should dismiss the close prompt", msg)
+		}
+		if len(m.selected) != 1 {
+			t.Errorf("%v should keep the marks, selected = %v", msg, m.selected)
+		}
+		if len(source.closed) != 0 {
+			t.Errorf("%v should not close anything, closed = %v", msg, source.closed)
+		}
+	}
+}
+
+func TestCloseErrorSetsNotice(t *testing.T) {
+	source := &fakeSource{
+		windows:  sampleWindows(),
+		closeErr: errors.New("osascript failed"),
+	}
+	m := newLoadedFrom(source)
+	m = update(m, key(tea.KeyEnter))
+	m = update(m, key(' '))
+	m = update(m, key('d'))
+	m, cmd := runKey(m, key('y'))
+	m, _ = runMsg(m, cmd)
+	if m.notice == "" || !strings.Contains(m.notice, "osascript failed") {
+		t.Errorf("a close error should set a notice, got %q", m.notice)
+	}
+	if len(m.selected) != 1 {
+		t.Errorf("a failed close should keep the marks, selected = %v", m.selected)
+	}
+}
+
+func TestBackingOutClearsMarks(t *testing.T) {
+	m := update(newLoaded(nil), key(tea.KeyEnter))
+	m = update(m, key(' '))
+	m = update(m, key(tea.KeyEscape))
+	if len(m.selected) != 0 {
+		t.Errorf("leaving the tabs view should clear the marks, selected = %v", m.selected)
+	}
+}
+
+func TestRefreshKeepsWindowAndMarks(t *testing.T) {
+	source := &fakeSource{windows: sampleWindows()}
+	m := newLoadedFrom(source)
+	m = update(m, key('j'))
+	m = update(m, key(tea.KeyEnter))
+	m = update(m, key(' '))
+	next, cmd := m.Update(key('r'))
+	m = runCmd(next.(Model), cmd)
+	if m.winCursor != 1 {
+		t.Errorf("a refresh should keep the drilled-in window, winCursor = %d", m.winCursor)
+	}
+	if m.mode != modeTabs {
+		t.Errorf("a refresh should stay in the tabs view, mode = %v", m.mode)
+	}
+	if !m.selected["https://example.com"] {
+		t.Errorf("a refresh should keep the marks, selected = %v", m.selected)
 	}
 }

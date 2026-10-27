@@ -19,6 +19,9 @@ const (
 	loadTimeout = 30 * time.Second
 	// activateTimeout bounds one attempt to focus a tab in Chrome.
 	activateTimeout = 10 * time.Second
+	// closeTimeout bounds one attempt to close a batch of tabs, which is
+	// one Apple Event per closed tab.
+	closeTimeout = time.Minute
 	// noticeTimeout is how long a footer notice sticks around on its own.
 	noticeTimeout = 5 * time.Second
 	// spinnerFPS is how often the loading spinner animates.
@@ -32,6 +35,8 @@ var spinnerFrames = []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "�
 var (
 	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
 	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("231")).Background(lipgloss.Color("238"))
+	markStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	confirmStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("203"))
 	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	badStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 )
@@ -41,6 +46,7 @@ var (
 type Source interface {
 	ListTabs(ctx context.Context) ([]chrome.Window, error)
 	ActivateTab(ctx context.Context, url string, windowIndex, tabIndex int) (chrome.Activation, bool, error)
+	CloseTabs(ctx context.Context, urls []string) (int, error)
 }
 
 type mode int
@@ -70,6 +76,13 @@ type Model struct {
 	// noticeGen counts notices so an expiring timer only clears the notice
 	// it was armed for, never a newer one.
 	noticeGen int
+
+	// selected holds URLs of tabs the user marked for closing. Tabs are
+	// identified by URL, like the open-tab lookup; a URL open in more than
+	// one window is selected (and closed) everywhere it appears.
+	selected map[string]bool
+	// confirming is true while the "close N tabs?" prompt is up.
+	confirming bool
 
 	// filtering is true while the user is typing a query; the query stays
 	// applied (and the list filtered) after enter leaves input mode.
@@ -104,6 +117,12 @@ type activatedMsg struct {
 // noticeExpiredMsg clears the footer notice five seconds after it was set.
 type noticeExpiredMsg struct {
 	gen int
+}
+
+// closedMsg reports how many tabs a close batch removed, or its error.
+type closedMsg struct {
+	count int
+	err   error
 }
 
 func (m Model) load() tea.Cmd {
@@ -143,6 +162,20 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(m.load(), m.spinnerTick())
 }
 
+// closeTabs closes every URL the user selected and reports the count.
+func (m Model) closeTabs() tea.Cmd {
+	urls := make([]string, 0, len(m.selected))
+	for url := range m.selected {
+		urls = append(urls, url)
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(m.ctx, closeTimeout)
+		defer cancel()
+		count, err := m.source.CloseTabs(ctx, urls)
+		return closedMsg{count: count, err: err}
+	}
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -162,12 +195,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.windows = msg.windows
-		m.winCursor = 0
+		m.winCursor = min(m.winCursor, max(len(m.windows)-1, 0))
 		m.tabCursor = 0
 		m.offset = 0
 		return m, nil
 	case tea.MouseWheelMsg:
 		if m.loading || m.err != nil || m.mode != modeTabs {
+			return m, nil
+		}
+		if m.confirming {
 			return m, nil
 		}
 		switch msg.Button {
@@ -197,8 +233,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = ""
 		}
 		return m, nil
+	case closedMsg:
+		if msg.err != nil {
+			return m.setNotice(msg.err.Error())
+		}
+		m.selected = nil
+		m.loading = true
+		m, notice := m.setNotice(fmt.Sprintf("closed %d %s", msg.count, plural("tab", msg.count)))
+		return m, tea.Batch(notice, m.load())
 	case tea.MouseClickMsg:
 		if m.loading || m.err != nil || msg.Button != tea.MouseLeft {
+			return m, nil
+		}
+		if m.confirming {
 			return m, nil
 		}
 		return m.clickRow(msg.Y), nil
@@ -206,7 +253,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.filtering {
 			return m.filterInput(msg)
 		}
+		if m.confirming {
+			return m.confirmInput(msg.String())
+		}
 		return m.keyPress(msg.String())
+	}
+	return m, nil
+}
+
+// confirmInput handles a keypress while the "close N tabs?" prompt is up:
+// y or enter goes through with it, n or esc backs out, and anything else
+// is ignored so no other action fires behind the prompt.
+func (m Model) confirmInput(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "y", "enter":
+		m.confirming = false
+		if len(m.selected) == 0 {
+			return m, nil
+		}
+		return m, m.closeTabs()
+	case "n", "esc":
+		m.confirming = false
 	}
 	return m, nil
 }
@@ -224,6 +293,7 @@ func (m Model) keyPress(key string) (tea.Model, tea.Cmd) {
 			}
 			m.mode = modeWindows
 			m = m.setQuery("")
+			m.selected = nil
 			return m, nil
 		}
 		if key == "esc" {
@@ -288,10 +358,40 @@ func (m Model) keyPressTabs(key string) (tea.Model, tea.Cmd) {
 		if m.tabCursor < len(tabs) {
 			return m, m.activateTab()
 		}
+	case "space":
+		m = m.toggleSelect()
+	case "d":
+		if len(m.selected) > 0 {
+			m.confirming = true
+		} else {
+			return m.setNotice("no tabs selected; space marks one")
+		}
 	case "/":
 		m.filtering = true
 	}
 	return m, nil
+}
+
+// toggleSelect flips whether the tab under the cursor is marked for
+// closing, keyed by its URL. Tabs without a URL cannot be marked.
+func (m Model) toggleSelect() Model {
+	tabs := m.visibleTabs()
+	if m.tabCursor >= len(tabs) {
+		return m
+	}
+	tab := tabs[m.tabCursor]
+	if tab.URL == "" {
+		return m
+	}
+	if m.selected == nil {
+		m.selected = map[string]bool{}
+	}
+	if m.selected[tab.URL] {
+		delete(m.selected, tab.URL)
+	} else {
+		m.selected[tab.URL] = true
+	}
+	return m
 }
 
 func (m Model) currentTabs() []chrome.Tab {
@@ -516,7 +616,11 @@ func (m Model) viewTabs() string {
 		if i == m.tabCursor {
 			cursor = "▸ "
 		}
-		row := fmt.Sprintf("%s%-4d %s", cursor, tab.Index, tab.Title)
+		mark := "  "
+		if m.selected[tab.URL] {
+			mark = markStyle.Render("✓ ")
+		}
+		row := fmt.Sprintf("%s%s%-4d %s", cursor, mark, tab.Index, tab.Title)
 		if tab.URL != "" {
 			row += "  " + dimStyle.Render(tab.URL)
 		}
@@ -536,9 +640,18 @@ func (m Model) viewTabs() string {
 		b.WriteString(truncate(prompt, m.width))
 		return b.String()
 	}
+	if m.confirming {
+		prompt := fmt.Sprintf("close %d %s? y/n", len(m.selected), plural("tab", len(m.selected)))
+		b.WriteString(truncate(confirmStyle.Render(prompt), m.width))
+		return b.String()
+	}
+	status := fmt.Sprintf("%d/%d", m.tabCursor+1, len(tabs))
+	if len(m.selected) > 0 {
+		status = fmt.Sprintf("%d selected · %s", len(m.selected), status)
+	}
 	footer := dimStyle.Render(fmt.Sprintf(
-		"%d/%d · j/k wheel ctrl+d/u scroll · g/G ends · / filter · o open · esc back · q quit",
-		m.tabCursor+1, len(tabs),
+		"%s · j/k wheel ctrl+d/u scroll · g/G ends · / filter · o open · space mark · d close · esc back · q quit",
+		status,
 	))
 	if m.notice != "" {
 		footer = badStyle.Render(truncate(m.notice, m.width))
