@@ -3,9 +3,9 @@ module github.com/maxjacobson/google-chrome-tab-manager
 go 1.27.3
 
 require (
-	charm.land/bubbletea/v2 v2.1.2
+	charm.land/bubbletea/v2 v2.1.3
 	charm.land/lipgloss/v2 v2.1.1
-	github.com/charmbracelet/x/ansi v0.11.9
+	github.com/charmbracelet/x/ansi v0.11.10
 )
 
 require (
